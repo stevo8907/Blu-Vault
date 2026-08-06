@@ -1,0 +1,33 @@
+{
+  "users": [],
+  "media": [],
+  "apiConfigs": [
+    {
+      "id": "api-tmdb",
+      "name": "The Movie Database (TMDB)",
+      "type": "tmdb",
+      "baseUrl": "https://api.themoviedb.org/3",
+      "apiKey": "",
+      "enabled": true,
+      "isPrimary": true
+    },
+    {
+      "id": "api-upc",
+      "name": "Open Barcode UPC Lookup",
+      "type": "upc_lookup",
+      "baseUrl": "https://api.upcitemdb.com/prod/trial/lookup",
+      "apiKey": "",
+      "enabled": true,
+      "isPrimary": false
+    },
+    {
+      "id": "api-omdb",
+      "name": "OMDb Movie API (Optional Backup)",
+      "type": "omdb",
+      "baseUrl": "https://www.omdbapi.com/",
+      "apiKey": "",
+      "enabled": false,
+      "isPrimary": false
+    }
+  ]
+}

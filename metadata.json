@@ -1,0 +1,6 @@
+{
+  "name": "Blu-Vault",
+  "description": "Sleek Homelab physical media & disc collection manager with TMDB integration, barcode scanner, multi-user support, and custom APIs.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
