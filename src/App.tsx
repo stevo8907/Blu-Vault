@@ -14,10 +14,11 @@ import { OobeSetupView } from './components/OobeSetupView';
 import { LoginView } from './components/LoginView';
 
 import { EditMediaModal } from './components/EditMediaModal';
+import { SeasonCard } from './components/SeasonCard';
 import { MediaItem, User, ViewCategory } from './types';
 import { fetchMedia, fetchUsers, checkAuthStatus, logoutUser, updateLoanStatus, toggleFavorite, deleteMediaItem, updateMediaItem } from './lib/api';
 import { getSavedNavItems } from './lib/navConfig';
-import { Disc, Film, Tv, Sparkles, Filter, Plus, Scan, Lock } from 'lucide-react';
+import { Disc, Film, Tv, Sparkles, Filter, Plus, Scan, Lock, Layers, ChevronDown, ChevronUp } from 'lucide-react';
 
 export default function App() {
   const [screenState, setScreenState] = useState<'LOADING' | 'OOBE' | 'LOGIN' | 'APP'>('LOADING');
@@ -59,11 +60,15 @@ export default function App() {
 
   // Modals state
   const [selectedMediaDetail, setSelectedMediaDetail] = useState<MediaItem | null>(null);
+  const [selectedSeasonForModal, setSelectedSeasonForModal] = useState<number | undefined>(undefined);
   const [editingMediaItem, setEditingMediaItem] = useState<MediaItem | null>(null);
   const [isAddMediaOpen, setIsAddMediaOpen] = useState(false);
   const [isBarcodeScannerOpen, setIsBarcodeScannerOpen] = useState(false);
   const [isUserSettingsOpen, setIsUserSettingsOpen] = useState(false);
   const [prefilledBarcodeData, setPrefilledBarcodeData] = useState<any>(null);
+
+  // TV Shows Seasons Collapse / Expand State
+  const [expandedShowIds, setExpandedShowIds] = useState<Set<string>>(new Set());
 
   // Load initial auth and system status
   useEffect(() => {
@@ -145,6 +150,26 @@ export default function App() {
     }
   };
 
+  // Helper functions for filtering and counts
+  const isAnimeItem = (m: MediaItem) => m.type === 'anime' || (m.genres && m.genres.some(g => g.toLowerCase() === 'anime'));
+
+  const isAnimeMovie = (m: MediaItem) => {
+    if (!isAnimeItem(m)) return false;
+    if (m.animeType === 'movie') return true;
+    if (m.animeType === 'tv') return false;
+    return !m.numberOfSeasons || m.numberOfSeasons <= 0;
+  };
+
+  const isAnimeTv = (m: MediaItem) => {
+    if (!isAnimeItem(m)) return false;
+    if (m.animeType === 'tv') return true;
+    if (m.animeType === 'movie') return false;
+    return Boolean(m.numberOfSeasons && m.numberOfSeasons > 0);
+  };
+
+  const isMovieItem = (m: MediaItem) => m.type === 'movie';
+  const isTvItem = (m: MediaItem) => m.type === 'tv';
+
   // Filter media items
   const getFilteredMedia = () => {
     let list = [...mediaItems];
@@ -176,37 +201,43 @@ export default function App() {
         // Already filtered above
         break;
       case 'movies-all':
-        list = list.filter(m => m.type === 'movie' || (m.type === 'anime' && (m.animeType === 'movie' || !m.numberOfSeasons || m.numberOfSeasons <= 0)));
+        list = list.filter(m => m.type === 'movie');
         break;
       case 'movies-4k':
-        list = list.filter(m => (m.type === 'movie' || m.type === 'anime') && (m.format.includes('4K') || m.format.includes('Steelbook')));
+        list = list.filter(m => m.type === 'movie' && (m.format.includes('4K') || m.format.includes('Steelbook')));
         break;
       case 'movies-bluray':
-        list = list.filter(m => (m.type === 'movie' || m.type === 'anime') && (m.format.includes('Blu-Ray') && !m.format.includes('4K')));
+        list = list.filter(m => m.type === 'movie' && m.format.includes('Blu-Ray') && !m.format.includes('4K'));
         break;
       case 'movies-dvd':
-        list = list.filter(m => (m.type === 'movie' || m.type === 'anime') && m.format === 'DVD');
+        list = list.filter(m => m.type === 'movie' && m.format === 'DVD');
         break;
       case 'movies-special':
-        list = list.filter(m => (m.type === 'movie' || m.type === 'anime') && (m.format === '3D Blu-Ray' || (m.edition && m.edition.toLowerCase().includes('criterion'))));
+        list = list.filter(m => m.type === 'movie' && (m.format === '3D Blu-Ray' || (m.edition && m.edition.toLowerCase().includes('criterion'))));
         break;
       case 'tv-all':
-        list = list.filter(m => m.type === 'tv' || (m.type === 'anime' && (m.animeType === 'tv' || (m.numberOfSeasons && m.numberOfSeasons > 0))));
+        list = list.filter(m => m.type === 'tv');
         break;
       case 'tv-4k':
-        list = list.filter(m => (m.type === 'tv' || m.type === 'anime') && m.format.includes('4K'));
+        list = list.filter(m => m.type === 'tv' && m.format.includes('4K'));
         break;
       case 'tv-bluray':
-        list = list.filter(m => (m.type === 'tv' || m.type === 'anime') && m.format.includes('Blu-Ray'));
+        list = list.filter(m => m.type === 'tv' && m.format.includes('Blu-Ray'));
         break;
       case 'tv-dvd':
-        list = list.filter(m => (m.type === 'tv' || m.type === 'anime') && m.format === 'DVD');
+        list = list.filter(m => m.type === 'tv' && m.format === 'DVD');
         break;
       case 'tv-boxsets':
-        list = list.filter(m => (m.type === 'tv' || m.type === 'anime') && m.format === 'Box Set');
+        list = list.filter(m => m.type === 'tv' && m.format === 'Box Set');
         break;
       case 'anime-all':
-        list = list.filter(m => m.type === 'anime' || (m.genres && m.genres.some(g => g.toLowerCase() === 'anime')));
+        list = list.filter(isAnimeItem);
+        break;
+      case 'anime-movies':
+        list = list.filter(isAnimeMovie);
+        break;
+      case 'anime-tv':
+        list = list.filter(isAnimeTv);
         break;
       case 'games-all':
         list = list.filter(m => m.type === 'game');
@@ -262,10 +293,61 @@ export default function App() {
 
   const filteredMedia = getFilteredMedia();
 
-  // Helper functions for counts
-  const isAnimeItem = (m: MediaItem) => m.type === 'anime' || (m.genres && m.genres.some(g => g.toLowerCase() === 'anime'));
-  const isMovieItem = (m: MediaItem) => m.type === 'movie' || (m.type === 'anime' && (m.animeType === 'movie' || !m.numberOfSeasons || m.numberOfSeasons <= 0));
-  const isTvItem = (m: MediaItem) => m.type === 'tv' || (m.type === 'anime' && (m.animeType === 'tv' || (m.numberOfSeasons && m.numberOfSeasons > 0)));
+  // Helper to check if item is a TV Show (regular TV or Anime TV series)
+  const isTvShowItem = (item: MediaItem) => {
+    return item.type === 'tv' || (item.type === 'anime' && isAnimeTv(item)) || Boolean(item.numberOfSeasons && item.numberOfSeasons > 0) || Boolean(item.seasons && item.seasons.length > 0);
+  };
+
+  const toggleShowExpand = (showId: string) => {
+    setExpandedShowIds(prev => {
+      const next = new Set(prev);
+      if (next.has(showId)) {
+        next.delete(showId);
+      } else {
+        next.add(showId);
+      }
+      return next;
+    });
+  };
+
+  const tvShowsInView = filteredMedia.filter(isTvShowItem);
+  const hasTvShowsInView = tvShowsInView.length > 0;
+  const allTvShowsExpanded = hasTvShowsInView && tvShowsInView.every(item => expandedShowIds.has(item.id));
+
+  const toggleExpandAllTvShows = () => {
+    if (allTvShowsExpanded) {
+      setExpandedShowIds(new Set());
+    } else {
+      setExpandedShowIds(new Set(tvShowsInView.map(m => m.id)));
+    }
+  };
+
+  const handleToggleSeasonOwned = async (mediaId: string, seasonNumber: number) => {
+    const item = mediaItems.find(m => m.id === mediaId);
+    if (!item) return;
+    const currentSeasons = item.seasons && item.seasons.length > 0 
+      ? item.seasons 
+      : Array.from({ length: item.numberOfSeasons || 1 }, (_, i) => ({
+          seasonNumber: i + 1,
+          name: `Season ${i + 1}`,
+          episodeCount: 10,
+          ownedInVault: true
+        }));
+
+    const updatedSeasons = currentSeasons.map(s => {
+      if (s.seasonNumber === seasonNumber) {
+        return { ...s, ownedInVault: s.ownedInVault === false ? true : false };
+      }
+      return s;
+    });
+
+    const updatedItem: MediaItem = {
+      ...item,
+      seasons: updatedSeasons
+    };
+
+    await handleSaveEditItem(updatedItem);
+  };
 
   // Library vs Wishlist separation
   const ownedMedia = mediaItems.filter(m => !m.isWishlist);
@@ -522,8 +604,19 @@ export default function App() {
                     </p>
                   </div>
 
-                  {/* Sort Controls & Action */}
+                  {/* Sort Controls & Expand Seasons Action */}
                   <div className="flex items-center gap-3">
+                    {hasTvShowsInView && (
+                      <button
+                        onClick={toggleExpandAllTvShows}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-900 border border-indigo-700/80 hover:border-indigo-500 text-xs font-bold text-indigo-300 transition-all shadow-sm active:scale-95 cursor-pointer"
+                        title={allTvShowsExpanded ? 'Collapse all TV seasons into show covers' : 'Expand all TV show covers to view individual seasons'}
+                      >
+                        <Layers className="w-3.5 h-3.5 text-indigo-400" />
+                        <span>{allTvShowsExpanded ? 'Collapse All Seasons' : 'Expand All Seasons'}</span>
+                      </button>
+                    )}
+
                     <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-slate-300">
                       <Filter className="w-3.5 h-3.5 text-cyan-400" />
                       <span>Sort:</span>
@@ -578,14 +671,87 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 sm:gap-6">
-                    {filteredMedia.map((item, idx) => (
-                      <MediaCard
-                        key={`${item.id}-${idx}`}
-                        item={item}
-                        onClick={() => setSelectedMediaDetail(item)}
-                        onToggleFavorite={(e) => handleToggleFavorite(e, item.id)}
-                      />
-                    ))}
+                    {filteredMedia.map((item, idx) => {
+                      const isTv = isTvShowItem(item);
+                      const seasonsList = item.seasons && item.seasons.length > 0
+                        ? item.seasons
+                        : Array.from({ length: item.numberOfSeasons || 1 }, (_, i) => ({
+                            seasonNumber: i + 1,
+                            name: `Season ${i + 1}`,
+                            episodeCount: 10,
+                            ownedInVault: true
+                          }));
+                      const isExpanded = isTv && expandedShowIds.has(item.id);
+
+                      return (
+                        <React.Fragment key={`${item.id}-${idx}`}>
+                          <MediaCard
+                            item={item}
+                            onClick={() => {
+                              setSelectedSeasonForModal(undefined);
+                              setSelectedMediaDetail(item);
+                            }}
+                            onToggleFavorite={(e) => handleToggleFavorite(e, item.id)}
+                            isTvShow={isTv}
+                            seasonsCount={seasonsList.length}
+                            isExpanded={isExpanded}
+                            onToggleExpand={() => toggleShowExpand(item.id)}
+                          />
+
+                          {/* Expanded TV Show Seasons Drawer */}
+                          {isExpanded && (
+                            <div className="col-span-full bg-slate-950/95 border-2 border-indigo-500/60 rounded-3xl p-4 sm:p-6 shadow-2xl shadow-indigo-950/60 space-y-4 my-2 animate-fade-in relative overflow-hidden">
+                              {/* Header banner for expanded seasons */}
+                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-indigo-900/40">
+                                <div className="flex items-center gap-3">
+                                  <div className="p-2.5 rounded-2xl bg-indigo-950 border border-indigo-700/50 text-indigo-400 shadow-md">
+                                    <Layers className="w-5 h-5" />
+                                  </div>
+                                  <div>
+                                    <h3 className="font-extrabold text-base text-white flex items-center gap-2">
+                                      <span>{item.title}</span>
+                                      <span className="px-2.5 py-0.5 rounded-full bg-indigo-950 text-indigo-300 border border-indigo-800 text-xs font-mono font-bold">
+                                        {seasonsList.length} {seasonsList.length === 1 ? 'Season' : 'Seasons'}
+                                      </span>
+                                    </h3>
+                                    <p className="text-xs text-slate-400">
+                                      Individual season physical media discs in vault • Click any season to view episodes & details
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <button
+                                  onClick={() => toggleShowExpand(item.id)}
+                                  className="self-start sm:self-center px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
+                                >
+                                  <ChevronUp className="w-4 h-4 text-indigo-400" />
+                                  <span>Collapse Seasons</span>
+                                </button>
+                              </div>
+
+                              {/* Grid of Season Cards */}
+                              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 sm:gap-4">
+                                {seasonsList.map((season) => (
+                                  <SeasonCard
+                                    key={`${item.id}-season-${season.seasonNumber}`}
+                                    parentItem={item}
+                                    season={season}
+                                    onClick={() => {
+                                      setSelectedSeasonForModal(season.seasonNumber);
+                                      setSelectedMediaDetail(item);
+                                    }}
+                                    onToggleOwned={(e) => {
+                                      e.stopPropagation();
+                                      handleToggleSeasonOwned(item.id, season.seasonNumber);
+                                    }}
+                                  />
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
                   </div>
                 )}
 
@@ -600,8 +766,12 @@ export default function App() {
       {selectedMediaDetail && (
         <MediaDetailModal
           item={selectedMediaDetail}
+          initialSeasonNum={selectedSeasonForModal}
           currentUser={currentUser}
-          onClose={() => setSelectedMediaDetail(null)}
+          onClose={() => {
+            setSelectedMediaDetail(null);
+            setSelectedSeasonForModal(undefined);
+          }}
           onEdit={(item) => setEditingMediaItem(item)}
           onDelete={handleDeleteItem}
           onUpdateLoan={handleUpdateLoan}
@@ -613,6 +783,14 @@ export default function App() {
             }
           }}
           onToggleWishlist={handleToggleWishlist}
+          onItemUpdated={(updatedItem) => {
+            setMediaItems(prev => prev.map(m => m.id === updatedItem.id ? updatedItem : m));
+            setSelectedMediaDetail(updatedItem);
+          }}
+          onRefreshItem={async () => {
+            const data = await fetchMedia();
+            setMediaItems(data);
+          }}
         />
       )}
 

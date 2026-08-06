@@ -283,3 +283,14 @@ export async function powerOffSystem(userId: string, password: string): Promise<
   return data;
 }
 
+export async function segmentShowSeasons(title: string, totalEpisodes?: number, requestedSeasons?: number, tmdbId?: number): Promise<{ success: boolean; source: string; seasons: Season[] }> {
+  const res = await fetch('/api/anime/segment-seasons', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, totalEpisodes, requestedSeasons, tmdbId })
+  });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.message || 'Failed to segment seasons');
+  return data;
+}
+

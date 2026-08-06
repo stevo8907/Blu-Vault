@@ -31,13 +31,17 @@ import {
   ChevronDown,
   ChevronUp,
   Bookmark,
-  BookmarkCheck
+  BookmarkCheck,
+  Wand2,
+  Image as ImageIcon
 } from 'lucide-react';
 import { MediaItem, Season, Episode, User } from '../types';
-import { fetchTMDBSeason, saveTVSeason, toggleEpisodeWatched } from '../lib/api';
+import { fetchTMDBSeason, saveTVSeason, toggleEpisodeWatched, updateMediaItem } from '../lib/api';
+import { SeasonSegmenterModal } from './SeasonSegmenterModal';
 
 interface MediaDetailModalProps {
   item: MediaItem;
+  initialSeasonNum?: number;
   currentUser?: User | null;
   onClose: () => void;
   onEdit: (item: MediaItem) => void;
@@ -45,11 +49,13 @@ interface MediaDetailModalProps {
   onUpdateLoan: (id: string, loanData: { isLentOut: boolean; lentTo?: string; dueDate?: string; notes?: string; lentItems?: string[] }) => void;
   onToggleFavorite: (id: string) => void;
   onToggleWishlist?: (id: string) => void;
+  onItemUpdated?: (item: MediaItem) => void;
   onRefreshItem?: () => void;
 }
 
 export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
   item,
+  initialSeasonNum,
   currentUser,
   onClose,
   onEdit,
@@ -57,6 +63,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
   onUpdateLoan,
   onToggleFavorite,
   onToggleWishlist,
+  onItemUpdated,
   onRefreshItem
 }) => {
   const [showLoanForm, setShowLoanForm] = useState(false);
@@ -84,24 +91,96 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
       }));
 
   const [seasons, setSeasons] = useState<Season[]>(initialSeasons);
-  const [selectedSeasonNum, setSelectedSeasonNum] = useState<number>(initialSeasons[0]?.seasonNumber || 1);
+  const [selectedSeasonNum, setSelectedSeasonNum] = useState<number>(initialSeasonNum || initialSeasons[0]?.seasonNumber || 1);
   const [isLoadingEpisodes, setIsLoadingEpisodes] = useState<boolean>(false);
   const [showAddSeasonModal, setShowAddSeasonModal] = useState<boolean>(false);
+  const [showSegmenterModal, setShowSegmenterModal] = useState<boolean>(false);
   const [newSeasonNumber, setNewSeasonNumber] = useState<number>(seasons.length + 1);
   const [newSeasonName, setNewSeasonName] = useState<string>(`Season ${seasons.length + 1}`);
+  const [editingSeasonPoster, setEditingSeasonPoster] = useState<boolean>(false);
+  const [seasonPosterInputUrl, setSeasonPosterInputUrl] = useState<string>('');
+
+  const handleStartEditSeasonPoster = () => {
+    setSeasonPosterInputUrl(activeSeason?.posterUrl || mediaItem.posterUrl || '');
+    setEditingSeasonPoster(true);
+  };
+
+  const handleSaveSeasonPoster = async () => {
+    if (!activeSeason) return;
+    const newUrl = seasonPosterInputUrl.trim() || mediaItem.posterUrl;
+    const updatedSeasons = seasons.map(s => {
+      if (s.seasonNumber === activeSeason.seasonNumber) {
+        return { ...s, posterUrl: newUrl };
+      }
+      return s;
+    });
+
+    setSeasons(updatedSeasons);
+    setEditingSeasonPoster(false);
+
+    try {
+      const serverUpdatedItem = await updateMediaItem(mediaItem.id, { seasons: updatedSeasons });
+      const finalItem = serverUpdatedItem || { ...mediaItem, seasons: updatedSeasons };
+      setMediaItem(finalItem);
+      if (onItemUpdated) onItemUpdated(finalItem);
+    } catch (err) {
+      console.error('Failed to save season boxart poster:', err);
+    }
+  };
+
+  const handleApplySegmentedSeasons = async (updatedSeasons: Season[]) => {
+    const totalEps = updatedSeasons.reduce((acc, s) => acc + (s.episodeCount || 0), 0);
+    const updatedPayload = {
+      numberOfSeasons: updatedSeasons.length,
+      numberOfEpisodes: totalEps,
+      seasons: updatedSeasons
+    };
+
+    try {
+      const serverUpdatedItem = await updateMediaItem(mediaItem.id, updatedPayload);
+      const finalItem = serverUpdatedItem || {
+        ...mediaItem,
+        numberOfSeasons: updatedSeasons.length,
+        numberOfEpisodes: totalEps,
+        seasons: updatedSeasons
+      };
+
+      setMediaItem(finalItem);
+      setSeasons(updatedSeasons);
+      setSelectedSeasonNum(updatedSeasons[0]?.seasonNumber || 1);
+
+      if (onItemUpdated) onItemUpdated(finalItem);
+      if (onRefreshItem) onRefreshItem();
+    } catch (err: any) {
+      console.error('Failed to update media item seasons on server:', err);
+      // Fallback local update
+      const fallbackItem: MediaItem = {
+        ...mediaItem,
+        numberOfSeasons: updatedSeasons.length,
+        numberOfEpisodes: totalEps,
+        seasons: updatedSeasons
+      };
+      setMediaItem(fallbackItem);
+      setSeasons(updatedSeasons);
+      if (onItemUpdated) onItemUpdated(fallbackItem);
+    }
+  };
 
   useEffect(() => {
     setMediaItem(item);
     if (item.seasons && item.seasons.length > 0) {
       setSeasons(item.seasons);
     }
-  }, [item]);
+    if (initialSeasonNum) {
+      setSelectedSeasonNum(initialSeasonNum);
+    }
+  }, [item, initialSeasonNum]);
 
   const activeSeason = seasons.find(s => s.seasonNumber === selectedSeasonNum) || seasons[0];
 
   // Auto-fetch episodes for active season if empty and tmdbId exists
   useEffect(() => {
-    if (mediaItem.type === 'tv' && activeSeason && (!activeSeason.episodes || activeSeason.episodes.length === 0)) {
+    if ((mediaItem.type === 'tv' || (mediaItem.type === 'anime' && (mediaItem.animeType === 'tv' || (mediaItem.numberOfSeasons && mediaItem.numberOfSeasons > 0)))) && activeSeason && (!activeSeason.episodes || activeSeason.episodes.length === 0)) {
       handleFetchSeasonEpisodes(activeSeason.seasonNumber);
     }
   }, [selectedSeasonNum, mediaItem.type]);
@@ -365,8 +444,8 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
             </div>
           </div>
 
-          {/* TV SHOW SEASONS & EPISODES EXPLORER */}
-          {mediaItem.type === 'tv' && (
+          {/* TV SHOW / ANIME SERIES SEASONS & EPISODES EXPLORER */}
+          {(mediaItem.type === 'tv' || (mediaItem.type === 'anime' && (mediaItem.animeType === 'tv' || (mediaItem.numberOfSeasons && mediaItem.numberOfSeasons > 0) || (mediaItem.seasons && mediaItem.seasons.length > 0)))) && (
             <div className="bg-slate-950/80 rounded-2xl border border-slate-800 p-4 sm:p-5 space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
                 <div>
@@ -378,12 +457,20 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => setShowSegmenterModal(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-extrabold text-xs transition-all shadow-md shadow-indigo-950/60 cursor-pointer"
+                    title="Segment single season into multi-season physical release (e.g. Dragon Ball 5 Seasons)"
+                  >
+                    <Wand2 className="w-3.5 h-3.5 text-indigo-200" />
+                    <span>Auto-Segment / Split Seasons</span>
+                  </button>
                   <button
                     onClick={() => setShowAddSeasonModal(true)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-600/90 hover:bg-cyan-500 text-slate-950 font-bold text-xs transition-all shadow-md"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs transition-all border border-slate-700"
                   >
-                    <Plus className="w-4 h-4" /> Add Season
+                    <Plus className="w-4 h-4 text-cyan-400" /> Add Season
                   </button>
                 </div>
               </div>
@@ -423,14 +510,40 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
               {activeSeason && (
                 <div className="bg-slate-900/90 p-4 rounded-xl border border-slate-800 space-y-3">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h4 className="text-sm font-black text-white">{activeSeason.name}</h4>
-                        <span className="text-xs text-slate-400 font-mono">({activeSeason.episodeCount || activeSeason.episodes?.length || 0} Episodes)</span>
+                    <div className="flex items-start gap-3">
+                      <div className="relative group shrink-0">
+                        <img
+                          src={activeSeason.posterUrl || mediaItem.posterUrl}
+                          alt={activeSeason.name}
+                          className="w-13 h-18 object-cover rounded-lg border border-slate-700/80 shadow-md bg-slate-950"
+                        />
+                        <button
+                          onClick={handleStartEditSeasonPoster}
+                          className="absolute inset-0 bg-slate-950/70 opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center text-white text-[10px] font-bold rounded-lg transition-all border border-indigo-500/50 cursor-pointer"
+                          title="Change Season Boxart Poster"
+                        >
+                          <Edit3 className="w-4 h-4 text-cyan-400 mb-0.5" />
+                          <span>Edit Boxart</span>
+                        </button>
                       </div>
-                      {activeSeason.overview && (
-                        <p className="text-xs text-slate-300 mt-1 line-clamp-2">{activeSeason.overview}</p>
-                      )}
+
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <h4 className="text-sm font-black text-white">{activeSeason.name}</h4>
+                          <span className="text-xs text-slate-400 font-mono">({activeSeason.episodeCount || activeSeason.episodes?.length || 0} Episodes)</span>
+                          <button
+                            onClick={handleStartEditSeasonPoster}
+                            className="text-[11px] text-indigo-400 hover:text-indigo-300 font-bold flex items-center gap-1 hover:underline ml-1 cursor-pointer"
+                            title="Edit Season Box Art Poster"
+                          >
+                            <ImageIcon className="w-3 h-3" />
+                            <span>Boxart</span>
+                          </button>
+                        </div>
+                        {activeSeason.overview && (
+                          <p className="text-xs text-slate-300 line-clamp-2">{activeSeason.overview}</p>
+                        )}
+                      </div>
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0">
@@ -455,6 +568,49 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                       </button>
                     </div>
                   </div>
+
+                  {/* Inline Season Boxart Editor Strip */}
+                  {editingSeasonPoster && (
+                    <div className="p-3 rounded-xl bg-slate-950 border border-indigo-500/50 space-y-2 animate-fadeIn">
+                      <div className="flex items-center justify-between text-xs font-bold text-indigo-300">
+                        <span className="flex items-center gap-1.5">
+                          <ImageIcon className="w-3.5 h-3.5" />
+                          <span>Update Boxart Poster for {activeSeason.name}</span>
+                        </span>
+                        <button
+                          onClick={() => setEditingSeasonPoster(false)}
+                          className="text-slate-400 hover:text-white"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <input
+                          type="text"
+                          value={seasonPosterInputUrl}
+                          onChange={(e) => setSeasonPosterInputUrl(e.target.value)}
+                          placeholder="Paste image poster URL (e.g., https://image.tmdb.org/...)"
+                          className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                        />
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setSeasonPosterInputUrl(mediaItem.posterUrl)}
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold shrink-0 transition-all"
+                          >
+                            Use Show Art
+                          </button>
+                          <button
+                            onClick={handleSaveSeasonPoster}
+                            className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black flex items-center gap-1 shrink-0 transition-all shadow-md shadow-indigo-600/30 cursor-pointer"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Save Boxart</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Watched Progress Bar & Batch Actions */}
                   {activeSeason.episodes && activeSeason.episodes.length > 0 && (
@@ -876,6 +1032,14 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
         </div>
 
       </div>
+
+      {/* Season Auto-Segmenter Modal */}
+      <SeasonSegmenterModal
+        item={mediaItem}
+        isOpen={showSegmenterModal}
+        onClose={() => setShowSegmenterModal(false)}
+        onApplySeasons={handleApplySegmentedSeasons}
+      />
     </div>
   );
 };

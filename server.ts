@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
+import { GoogleGenAI, Type } from '@google/genai';
 import { MediaItem, User, UserPermissions, UserRole, ApiConfig, PhysicalFormat, MediaType, Condition, Season, Episode } from './src/types.js';
 
 const app = express();
@@ -889,6 +890,80 @@ app.get('/api/tmdb/details', async (req, res) => {
   });
 });
 
+// Helper to fetch all TMDB episodes for a TV show across seasons or from Season 1
+async function fetchAllTMDBEpisodesForShow(tvId: number, apiKey: string): Promise<{
+  allEpisodes: any[];
+  showPosterUrl?: string;
+  seasonPosters: Record<number, string>;
+}> {
+  const result: { allEpisodes: any[]; showPosterUrl?: string; seasonPosters: Record<number, string> } = {
+    allEpisodes: [],
+    seasonPosters: {}
+  };
+
+  if (!tvId || !apiKey) return result;
+
+  try {
+    const showUrl = `https://api.themoviedb.org/3/tv/${tvId}?api_key=${apiKey}`;
+    const showRes = await fetch(showUrl);
+    const showData = await showRes.json();
+
+    if (showData.poster_path) {
+      result.showPosterUrl = `https://image.tmdb.org/t/p/w500${showData.poster_path}`;
+    }
+
+    if (showData.seasons && Array.isArray(showData.seasons)) {
+      showData.seasons.forEach((s: any) => {
+        if (s.poster_path) {
+          result.seasonPosters[s.season_number] = `https://image.tmdb.org/t/p/w500${s.poster_path}`;
+        }
+      });
+    }
+
+    // Always fetch Season 1
+    const s1Url = `https://api.themoviedb.org/3/tv/${tvId}/season/1?api_key=${apiKey}`;
+    const s1Res = await fetch(s1Url);
+    const s1Data = await s1Res.json();
+
+    if (s1Data.episodes && Array.isArray(s1Data.episodes)) {
+      result.allEpisodes.push(...s1Data.episodes);
+      if (s1Data.poster_path) {
+        result.seasonPosters[1] = `https://image.tmdb.org/t/p/w500${s1Data.poster_path}`;
+      }
+    }
+
+    // Fetch other seasons if present
+    if (showData.seasons && showData.seasons.length > 1) {
+      for (const s of showData.seasons) {
+        if (s.season_number > 1) {
+          try {
+            const sUrl = `https://api.themoviedb.org/3/tv/${tvId}/season/${s.season_number}?api_key=${apiKey}`;
+            const sRes = await fetch(sUrl);
+            const sData = await sRes.json();
+            if (sData.episodes && Array.isArray(sData.episodes)) {
+              const existingNums = new Set(result.allEpisodes.map(e => e.id));
+              sData.episodes.forEach((ep: any) => {
+                if (!existingNums.has(ep.id)) {
+                  result.allEpisodes.push(ep);
+                }
+              });
+              if (sData.poster_path) {
+                result.seasonPosters[s.season_number] = `https://image.tmdb.org/t/p/w500${sData.poster_path}`;
+              }
+            }
+          } catch (e) {
+            // continue
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Error in fetchAllTMDBEpisodesForShow:', err);
+  }
+
+  return result;
+}
+
 // TMDB Season & Episode fetch endpoint
 app.get('/api/tmdb/season', async (req, res) => {
   const tvId = req.query.tvId;
@@ -908,7 +983,7 @@ app.get('/api/tmdb/season', async (req, res) => {
       const response = await fetch(url);
       const data = await response.json();
 
-      if (data.season_number !== undefined) {
+      if (data.season_number !== undefined && data.episodes && data.episodes.length > 0) {
         return res.json({
           success: true,
           season: {
@@ -926,13 +1001,50 @@ app.get('/api/tmdb/season', async (req, res) => {
               name: ep.name,
               overview: ep.overview || 'Episode synopsis.',
               airDate: ep.air_date || '',
-              runtimeMinutes: ep.runtime || 45,
+              runtimeMinutes: ep.runtime || 24,
               stillUrl: ep.still_path ? `https://image.tmdb.org/t/p/w500${ep.still_path}` : undefined,
               voteAverage: ep.vote_average ? Math.round(ep.vote_average * 10) / 10 : 8.0,
               isWatched: false
             }))
           }
         });
+      }
+
+      // If seasonNumber > 1 returned 404 or empty (e.g. single-season show on TMDB like Dragon Ball), fetch Season 1 and slice
+      const tmdbShowData = await fetchAllTMDBEpisodesForShow(Number(tvId), apiKey);
+      if (tmdbShowData.allEpisodes.length > 0) {
+        const total = tmdbShowData.allEpisodes.length;
+        const totalSeasons = seasonNumber > 5 ? seasonNumber : 5;
+        const perSeason = Math.ceil(total / totalSeasons);
+        const startIdx = (seasonNumber - 1) * perSeason;
+        const endIdx = Math.min(startIdx + perSeason, total);
+        const sliced = tmdbShowData.allEpisodes.slice(startIdx, endIdx);
+
+        if (sliced.length > 0) {
+          const poster = tmdbShowData.seasonPosters[seasonNumber] || tmdbShowData.showPosterUrl;
+          return res.json({
+            success: true,
+            season: {
+              seasonNumber,
+              name: `Season ${seasonNumber}`,
+              overview: `Episodes ${startIdx + 1} through ${endIdx} of series.`,
+              posterUrl: poster,
+              episodeCount: sliced.length,
+              episodes: sliced.map((ep: any, idx: number) => ({
+                id: ep.id || (seasonNumber * 1000 + idx + 1),
+                episodeNumber: ep.episode_number || (startIdx + idx + 1),
+                seasonNumber,
+                name: ep.name || `Episode ${startIdx + idx + 1}`,
+                overview: ep.overview || `Plot developments in Episode ${startIdx + idx + 1}.`,
+                airDate: ep.air_date || '',
+                runtimeMinutes: ep.runtime || 24,
+                stillUrl: ep.still_path ? `https://image.tmdb.org/t/p/w500${ep.still_path}` : undefined,
+                voteAverage: ep.vote_average ? Math.round(ep.vote_average * 10) / 10 : 8.0,
+                isWatched: false
+              }))
+            }
+          });
+        }
       }
     } catch (err) {
       console.warn('TMDB Season fetch error:', err);
@@ -944,10 +1056,10 @@ app.get('/api/tmdb/season', async (req, res) => {
   const mockEpisodes = Array.from({ length: epCount }, (_, i) => ({
     episodeNumber: i + 1,
     seasonNumber,
-    name: `Episode ${i + 1}`,
+    name: `Episode ${i + 1}: The Journey Unfolds`,
     overview: `Key plot developments and story arcs unfold in Episode ${i + 1} of Season ${seasonNumber}.`,
     airDate: `2023-0${(seasonNumber % 9) + 1}-15`,
-    runtimeMinutes: 45 + (i % 12),
+    runtimeMinutes: 24,
     stillUrl: `https://images.unsplash.com/photo-1574375927938-d5a98e8ffe85?w=500&auto=format&fit=crop&q=80`,
     voteAverage: 8.2 + (i % 8) * 0.1,
     isWatched: false
@@ -959,9 +1071,256 @@ app.get('/api/tmdb/season', async (req, res) => {
       seasonNumber,
       name: `Season ${seasonNumber}`,
       overview: `Episodes for Season ${seasonNumber}`,
+      posterUrl: `https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=500&auto=format&fit=crop&q=80`,
       episodeCount: mockEpisodes.length,
       episodes: mockEpisodes
     }
+  });
+});
+
+// Curated presets for popular single-season TMDB anime & TV shows
+const KNOWN_SHOW_SEASONS: Record<string, { tmdbId?: number; seasonNumber: number; name: string; overview: string; episodeCount: number; startEpisode: number; endEpisode: number; posterUrl?: string }[]> = {
+  'dragon ball': [
+    { seasonNumber: 1, name: 'Season 1: Emperor Pilaf & 21st Budokai Sagas', overview: 'Goku meets Bulma and begins his quest for the Dragon Balls, ending with the 21st World Martial Arts Tournament.', episodeCount: 28, startEpisode: 1, endEpisode: 28, posterUrl: 'https://image.tmdb.org/t/p/w500/mIasq3S0sQf092T6JtNq2R4N40B.jpg' },
+    { seasonNumber: 2, name: 'Season 2: Red Ribbon Army & General Blue Sagas', overview: 'Goku battles the sinister Red Ribbon Army across various bases and underwater caverns.', episodeCount: 40, startEpisode: 29, endEpisode: 68, posterUrl: 'https://image.tmdb.org/t/p/w500/mIasq3S0sQf092T6JtNq2R4N40B.jpg' },
+    { seasonNumber: 3, name: 'Season 3: Commander Red & Fortuneteller Baba Sagas', overview: 'Goku invades Red Ribbon Headquarters and challenges Baba\'s fighters to locate the final Dragon Ball.', episodeCount: 33, startEpisode: 69, endEpisode: 101, posterUrl: 'https://image.tmdb.org/t/p/w500/mIasq3S0sQf092T6JtNq2R4N40B.jpg' },
+    { seasonNumber: 4, name: 'Season 4: Tien Shinhan & King Piccolo Sagas', overview: 'The 22nd Budokai tournament leads into the arrival of the ancient Demon King Piccolo.', episodeCount: 31, startEpisode: 102, endEpisode: 132, posterUrl: 'https://image.tmdb.org/t/p/w500/mIasq3S0sQf092T6JtNq2R4N40B.jpg' },
+    { seasonNumber: 5, name: 'Season 5: Heavenly Training & 23rd Budokai Sagas', overview: 'Goku trains at Kami\'s Lookout and returns as an adult for the dramatic 23rd World Martial Arts Tournament.', episodeCount: 21, startEpisode: 133, endEpisode: 153, posterUrl: 'https://image.tmdb.org/t/p/w500/mIasq3S0sQf092T6JtNq2R4N40B.jpg' }
+  ],
+  'dragon ball z': [
+    { seasonNumber: 1, name: 'Season 1: Saiyan Saga', overview: 'Raditz, Nappa, and Vegeta arrive on Earth.', episodeCount: 39, startEpisode: 1, endEpisode: 39, posterUrl: 'https://image.tmdb.org/t/p/w500/dP32c3fMAn4dGcx2vBCl8iX6J2m.jpg' },
+    { seasonNumber: 2, name: 'Season 2: Namek & Captain Ginyu Sagas', overview: 'Journey to Planet Namek and battle against the Ginyu Force.', episodeCount: 35, startEpisode: 40, endEpisode: 74, posterUrl: 'https://image.tmdb.org/t/p/w500/dP32c3fMAn4dGcx2vBCl8iX6J2m.jpg' },
+    { seasonNumber: 3, name: 'Season 3: Frieza Saga', overview: 'Goku transforms into a Super Saiyan during the epic battle against Frieza.', episodeCount: 33, startEpisode: 75, endEpisode: 107, posterUrl: 'https://image.tmdb.org/t/p/w500/dP32c3fMAn4dGcx2vBCl8iX6J2m.jpg' },
+    { seasonNumber: 4, name: 'Season 4: Garlic Jr., Trunks & Android Sagas', overview: 'Future Trunks arrives, warning of the impending Android threat.', episodeCount: 32, startEpisode: 108, endEpisode: 139, posterUrl: 'https://image.tmdb.org/t/p/w500/dP32c3fMAn4dGcx2vBCl8iX6J2m.jpg' },
+    { seasonNumber: 5, name: 'Season 5: Imperfect & Perfect Cell Sagas', overview: 'Cell absorbs Androids 17 and 18 to achieve his Perfect form.', episodeCount: 26, startEpisode: 140, endEpisode: 165, posterUrl: 'https://image.tmdb.org/t/p/w500/dP32c3fMAn4dGcx2vBCl8iX6J2m.jpg' },
+    { seasonNumber: 6, name: 'Season 6: Cell Games Saga', overview: 'Gohan unlocks Super Saiyan 2 in the climax of the Cell Games.', episodeCount: 29, startEpisode: 166, endEpisode: 194, posterUrl: 'https://image.tmdb.org/t/p/w500/dP32c3fMAn4dGcx2vBCl8iX6J2m.jpg' },
+    { seasonNumber: 7, name: 'Season 7: Great Saiyaman & World Tournament Sagas', overview: 'Gohan attends high school and enters the 25th World Tournament.', episodeCount: 25, startEpisode: 195, endEpisode: 219, posterUrl: 'https://image.tmdb.org/t/p/w500/dP32c3fMAn4dGcx2vBCl8iX6J2m.jpg' },
+    { seasonNumber: 8, name: 'Season 8: Babidi & Majin Buu Sagas', overview: 'The wizard Babidi awakens Majin Buu.', episodeCount: 34, startEpisode: 220, endEpisode: 253, posterUrl: 'https://image.tmdb.org/t/p/w500/dP32c3fMAn4dGcx2vBCl8iX6J2m.jpg' },
+    { seasonNumber: 9, name: 'Season 9: Fusion, Kid Buu & Peaceful World Sagas', overview: 'Goku and Vegeta fuse into Vegito to battle Kid Buu in the grand finale.', episodeCount: 38, startEpisode: 254, endEpisode: 291, posterUrl: 'https://image.tmdb.org/t/p/w500/dP32c3fMAn4dGcx2vBCl8iX6J2m.jpg' }
+  ],
+  'naruto': [
+    { seasonNumber: 1, name: 'Season 1: Land of Waves & Chunin Exam Sagas', overview: 'Naruto, Sasuke, and Sakura team up under Kakashi.', episodeCount: 26, startEpisode: 1, endEpisode: 26 },
+    { seasonNumber: 2, name: 'Season 2: Chunin Exam Finals Saga', overview: 'Orochimaru attacks the Hidden Leaf Village during the exams.', episodeCount: 26, startEpisode: 27, endEpisode: 52 },
+    { seasonNumber: 3, name: 'Season 3: Search for Tsunade Saga', overview: 'Jiraiya and Naruto search for Lady Tsunade while encountering Itachi.', episodeCount: 28, startEpisode: 53, endEpisode: 80 },
+    { seasonNumber: 4, name: 'Season 4: Sasuke Recovery Mission Saga', overview: 'The Leaf Genin pursue the Sound Four to retrieve Sasuke.', episodeCount: 26, startEpisode: 81, endEpisode: 106 },
+    { seasonNumber: 5, name: 'Season 5: Filler Arcs Part 1', overview: 'Missions to various hidden villages.', episodeCount: 29, startEpisode: 107, endEpisode: 135 },
+    { seasonNumber: 6, name: 'Season 6: Filler Arcs Part 2', overview: 'Further training and missions across Shinobi lands.', episodeCount: 29, startEpisode: 136, endEpisode: 164 },
+    { seasonNumber: 7, name: 'Season 7: Filler Arcs Part 3', overview: 'Leaf Genin adventures.', episodeCount: 26, startEpisode: 165, endEpisode: 190 },
+    { seasonNumber: 8, name: 'Season 8: Filler Arcs Part 4', overview: 'Final missions before Naruto\'s departure with Jiraiya.', episodeCount: 15, startEpisode: 191, endEpisode: 205 },
+    { seasonNumber: 9, name: 'Season 9: Departure Saga', overview: 'Naruto sets out on his 2.5 year journey.', episodeCount: 15, startEpisode: 206, endEpisode: 220 }
+  ],
+  'sailor moon': [
+    { seasonNumber: 1, name: 'Season 1: Dark Kingdom Saga', overview: 'Usagi Tsukino becomes Sailor Moon.', episodeCount: 46, startEpisode: 1, endEpisode: 46 },
+    { seasonNumber: 2, name: 'Season 2: Sailor Moon R (Makai Tree & Black Moon)', overview: 'Introduction of Chibiusa and the Black Moon Clan.', episodeCount: 43, startEpisode: 47, endEpisode: 89 },
+    { seasonNumber: 3, name: 'Season 3: Sailor Moon S (Death Busters)', overview: 'Outer Guardians appear to locate the Holy Grail.', episodeCount: 38, startEpisode: 90, endEpisode: 127 },
+    { seasonNumber: 4, name: 'Season 4: Sailor Moon SuperS (Dead Moon Circus)', overview: 'Pegasus grants Super Sailor Moon new powers.', episodeCount: 39, startEpisode: 128, endEpisode: 166 },
+    { seasonNumber: 5, name: 'Season 5: Sailor Moon Sailor Stars (Shadow Galactica)', overview: 'Sailor Starlights team up with Sailor Moon against Queen Galaxia.', episodeCount: 34, startEpisode: 167, endEpisode: 200 }
+  ]
+};
+
+// AI & Catalog Season Auto-Segmenting Endpoint
+app.post('/api/anime/segment-seasons', async (req, res) => {
+  const { title, totalEpisodes = 153, requestedSeasons, tmdbId } = req.body;
+  const cleanTitle = (title || '').trim().toLowerCase();
+
+  const db = getDatabase();
+  const tmdbConfig = db.apiConfigs.find(a => a.type === 'tmdb' && a.enabled);
+  const apiKey = tmdbConfig?.apiKey || process.env.TMDB_API_KEY;
+
+  // Attempt to load TMDB episode data first if TMDB ID or API key is available
+  let tmdbEpisodesData: { allEpisodes: any[]; showPosterUrl?: string; seasonPosters: Record<number, string> } = {
+    allEpisodes: [],
+    seasonPosters: {}
+  };
+
+  const targetTmdbId = tmdbId || (cleanTitle.includes('dragon ball z') ? 12971 : cleanTitle.includes('dragon ball') ? 12609 : cleanTitle.includes('naruto') ? 46260 : undefined);
+
+  if (targetTmdbId && apiKey) {
+    tmdbEpisodesData = await fetchAllTMDBEpisodesForShow(Number(targetTmdbId), apiKey);
+  }
+
+  // 1. Check if title matches our curated catalog
+  const presetKey = Object.keys(KNOWN_SHOW_SEASONS).find(k => cleanTitle.includes(k) || k.includes(cleanTitle));
+  
+  if (presetKey && !requestedSeasons) {
+    const presetSeasons = KNOWN_SHOW_SEASONS[presetKey].map(s => {
+      const epCount = s.episodeCount;
+      const startEp = s.startEpisode;
+      const poster = s.posterUrl || tmdbEpisodesData.seasonPosters[s.seasonNumber] || tmdbEpisodesData.showPosterUrl;
+
+      return {
+        id: Math.floor(Math.random() * 900000) + 100000,
+        seasonNumber: s.seasonNumber,
+        name: s.name,
+        overview: s.overview,
+        posterUrl: poster,
+        episodeCount: epCount,
+        ownedInVault: true,
+        episodes: Array.from({ length: epCount }, (_, idx) => {
+          const epNum = startEp + idx;
+          const tmdbEp = tmdbEpisodesData.allEpisodes.find(e => e.episode_number === epNum) || tmdbEpisodesData.allEpisodes[epNum - 1];
+
+          return {
+            id: tmdbEp?.id || Math.floor(Math.random() * 900000) + epNum,
+            episodeNumber: epNum,
+            seasonNumber: s.seasonNumber,
+            name: tmdbEp?.name || `Episode ${epNum}`,
+            overview: tmdbEp?.overview || `${s.name} - Episode ${epNum} key developments and story arc developments.`,
+            airDate: tmdbEp?.air_date || '',
+            runtimeMinutes: tmdbEp?.runtime || 24,
+            stillUrl: tmdbEp?.still_path ? `https://image.tmdb.org/t/p/w500${tmdbEp.still_path}` : 'https://images.unsplash.com/photo-1574375927938-d5a98e8ffe85?w=500&auto=format&fit=crop&q=80',
+            voteAverage: tmdbEp?.vote_average ? Math.round(tmdbEp.vote_average * 10) / 10 : 8.2,
+            isWatched: false
+          };
+        })
+      };
+    });
+
+    return res.json({
+      success: true,
+      source: 'curated-catalog',
+      seasons: presetSeasons
+    });
+  }
+
+  // 2. Try Gemini AI lookup if GEMINI_API_KEY is available
+  if (process.env.GEMINI_API_KEY && !requestedSeasons) {
+    try {
+      const ai = new GoogleGenAI({
+        apiKey: process.env.GEMINI_API_KEY,
+        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+      });
+
+      const prompt = `You are an expert anime & home media cataloging system.
+The show "${title}" has approximately ${totalEpisodes} total episodes, but TMDB or online catalogs list it as 1 single season.
+Find the standard home media (DVD/Blu-ray) or TV broadcast multi-season / story arc breakdown.
+Return a structured JSON list of seasons. For each season provide: seasonNumber (integer), name (string e.g. "Season 1: Saga Name"), overview (short string summary), startEpisode (integer), endEpisode (integer), and episodeCount (integer). The total episodeCount across all seasons should equal approx ${totalEpisodes}.`;
+
+      const aiResponse = await ai.models.generateContent({
+        model: "gemini-3.6-flash",
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              seasons: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    seasonNumber: { type: Type.INTEGER },
+                    name: { type: Type.STRING },
+                    overview: { type: Type.STRING },
+                    startEpisode: { type: Type.INTEGER },
+                    endEpisode: { type: Type.INTEGER },
+                    episodeCount: { type: Type.INTEGER }
+                  },
+                  required: ["seasonNumber", "name", "episodeCount"]
+                }
+              }
+            },
+            required: ["seasons"]
+          }
+        }
+      });
+
+      if (aiResponse.text) {
+        const parsed = JSON.parse(aiResponse.text);
+        if (parsed.seasons && parsed.seasons.length > 0) {
+          const formattedSeasons = parsed.seasons.map((s: any, i: number) => {
+            const seasonNum = s.seasonNumber || (i + 1);
+            const count = s.episodeCount || (s.endEpisode && s.startEpisode ? s.endEpisode - s.startEpisode + 1 : 24);
+            const startEp = s.startEpisode || 1;
+            const poster = tmdbEpisodesData.seasonPosters[seasonNum] || tmdbEpisodesData.showPosterUrl;
+
+            return {
+              id: Math.floor(Math.random() * 900000) + 100000,
+              seasonNumber: seasonNum,
+              name: s.name || `Season ${seasonNum}`,
+              overview: s.overview || `Season ${seasonNum} comprising episodes ${startEp} to ${startEp + count - 1}.`,
+              posterUrl: poster,
+              episodeCount: count,
+              ownedInVault: true,
+              episodes: Array.from({ length: count }, (_, idx) => {
+                const epNum = startEp + idx;
+                const tmdbEp = tmdbEpisodesData.allEpisodes.find(e => e.episode_number === epNum) || tmdbEpisodesData.allEpisodes[epNum - 1];
+
+                return {
+                  id: tmdbEp?.id || Math.floor(Math.random() * 900000) + epNum,
+                  episodeNumber: epNum,
+                  seasonNumber: seasonNum,
+                  name: tmdbEp?.name || `Episode ${epNum}: ${s.name || 'Story Arc'}`,
+                  overview: tmdbEp?.overview || `Episode ${epNum} of ${title || 'Series'}. Key events and character developments unfold.`,
+                  airDate: tmdbEp?.air_date || '',
+                  runtimeMinutes: tmdbEp?.runtime || 24,
+                  stillUrl: tmdbEp?.still_path ? `https://image.tmdb.org/t/p/w500${tmdbEp.still_path}` : 'https://images.unsplash.com/photo-1574375927938-d5a98e8ffe85?w=500&auto=format&fit=crop&q=80',
+                  voteAverage: tmdbEp?.vote_average ? Math.round(tmdbEp.vote_average * 10) / 10 : 8.0,
+                  isWatched: false
+                };
+              })
+            };
+          });
+
+          return res.json({
+            success: true,
+            source: 'gemini-ai',
+            seasons: formattedSeasons
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('Gemini season segmenting failed, falling back to math splitter:', err);
+    }
+  }
+
+  // 3. Mathematical auto-splitter fallback
+  const targetNumSeasons = requestedSeasons || (cleanTitle.includes('dragon ball') ? 5 : Math.max(2, Math.min(10, Math.ceil(totalEpisodes / 26))));
+  const baseEpPerSeason = Math.floor(totalEpisodes / targetNumSeasons);
+  const remainder = totalEpisodes % targetNumSeasons;
+
+  let currentEpTracker = 1;
+  const generatedSeasons = Array.from({ length: targetNumSeasons }, (_, i) => {
+    const sNum = i + 1;
+    const count = baseEpPerSeason + (i < remainder ? 1 : 0);
+    const startEp = currentEpTracker;
+    const endEp = currentEpTracker + count - 1;
+    currentEpTracker = endEp + 1;
+
+    const poster = tmdbEpisodesData.seasonPosters[sNum] || tmdbEpisodesData.showPosterUrl;
+
+    return {
+      id: Math.floor(Math.random() * 900000) + 100000,
+      seasonNumber: sNum,
+      name: `Season ${sNum}: Episodes ${startEp}–${endEp}`,
+      overview: `Home media release Season ${sNum} containing episodes ${startEp} through ${endEp}.`,
+      posterUrl: poster,
+      episodeCount: count,
+      ownedInVault: true,
+      episodes: Array.from({ length: count }, (_, epIdx) => {
+        const epNum = startEp + epIdx;
+        const tmdbEp = tmdbEpisodesData.allEpisodes.find(e => e.episode_number === epNum) || tmdbEpisodesData.allEpisodes[epNum - 1];
+
+        return {
+          id: tmdbEp?.id || Math.floor(Math.random() * 900000) + epNum,
+          episodeNumber: epNum,
+          seasonNumber: sNum,
+          name: tmdbEp?.name || `Episode ${epNum}`,
+          overview: tmdbEp?.overview || `Episode ${epNum} of ${title || 'Series'}. Key events and story arcs unfold.`,
+          airDate: tmdbEp?.air_date || '',
+          runtimeMinutes: tmdbEp?.runtime || 24,
+          stillUrl: tmdbEp?.still_path ? `https://image.tmdb.org/t/p/w500${tmdbEp.still_path}` : 'https://images.unsplash.com/photo-1574375927938-d5a98e8ffe85?w=500&auto=format&fit=crop&q=80',
+          voteAverage: tmdbEp?.vote_average ? Math.round(tmdbEp.vote_average * 10) / 10 : 8.0,
+          isWatched: false
+        };
+      })
+    };
+  });
+
+  return res.json({
+    success: true,
+    source: 'smart-splitter',
+    seasons: generatedSeasons
   });
 });
 

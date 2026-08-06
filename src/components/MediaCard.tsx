@@ -11,7 +11,10 @@ import {
   Box,
   CheckCircle2,
   Tag,
-  Bookmark
+  Bookmark,
+  Layers,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 import { MediaItem, PhysicalFormat } from '../types';
 
@@ -19,12 +22,20 @@ interface MediaCardProps {
   item: MediaItem;
   onClick: () => void;
   onToggleFavorite: (e: React.MouseEvent) => void;
+  isTvShow?: boolean;
+  seasonsCount?: number;
+  isExpanded?: boolean;
+  onToggleExpand?: (e: React.MouseEvent) => void;
 }
 
 export const MediaCard: React.FC<MediaCardProps> = ({
   item,
   onClick,
-  onToggleFavorite
+  onToggleFavorite,
+  isTvShow = false,
+  seasonsCount,
+  isExpanded = false,
+  onToggleExpand
 }) => {
   // Format styling badge helpers
   const getFormatBadge = (format: PhysicalFormat) => {
@@ -182,6 +193,26 @@ export const MediaCard: React.FC<MediaCardProps> = ({
             <Star className="w-3 h-3 fill-amber-400" />
             <span>{item.rating ? item.rating.toFixed(1) : '7.5'}</span>
           </div>
+        )}
+
+        {/* TV Show Seasons Expand / Collapse Toggle Badge */}
+        {isTvShow && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              if (onToggleExpand) onToggleExpand(e);
+            }}
+            className={`absolute bottom-2.5 right-2.5 z-20 px-2 py-1 rounded-xl backdrop-blur-md text-[11px] font-black flex items-center gap-1.5 transition-all shadow-lg ${
+              isExpanded 
+                ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white border border-indigo-400 shadow-indigo-500/40 ring-2 ring-indigo-400/60 scale-105' 
+                : 'bg-slate-950/90 hover:bg-slate-900 text-indigo-300 hover:text-white border border-indigo-700/80 hover:border-indigo-400'
+            }`}
+            title={isExpanded ? 'Collapse seasons into main show' : 'Expand show to view individual seasons'}
+          >
+            <Layers className="w-3.5 h-3.5 text-indigo-300" />
+            <span>{seasonsCount || item.numberOfSeasons || (item.seasons ? item.seasons.length : 1)} Seasons</span>
+            {isExpanded ? <ChevronUp className="w-3.5 h-3.5 text-indigo-200" /> : <ChevronDown className="w-3.5 h-3.5 text-indigo-200" />}
+          </button>
         )}
       </div>
 
