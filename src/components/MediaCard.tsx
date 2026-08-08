@@ -17,6 +17,7 @@ import {
   ChevronUp
 } from 'lucide-react';
 import { MediaItem, PhysicalFormat } from '../types';
+import { isCompleteTvSeries } from '../lib/tvUtils';
 
 interface MediaCardProps {
   item: MediaItem;
@@ -148,6 +149,12 @@ export const MediaCard: React.FC<MediaCardProps> = ({
             <span className="text-[10px] tracking-wider font-extrabold uppercase px-1.5 py-0.5 rounded-md border backdrop-blur-md bg-purple-950/90 text-purple-300 border-purple-500/50 flex items-center gap-1 shadow-md shadow-purple-900/30">
               <Sparkles className="w-3 h-3 text-purple-400" />
               Anime
+            </span>
+          )}
+          {isCompleteTvSeries(item) && (
+            <span className="text-[10px] tracking-wider font-extrabold uppercase px-1.5 py-0.5 rounded-md border backdrop-blur-md bg-amber-950/90 text-amber-300 border-amber-500/50 flex items-center gap-1 shadow-md shadow-amber-900/30">
+              <Box className="w-3 h-3 text-amber-400" />
+              Complete
             </span>
           )}
         </div>

@@ -17,6 +17,7 @@ export interface User {
   permissions: UserPermissions;
   avatar: string;
   pin?: string;
+  disabled?: boolean;
   createdAt: string;
 }
 
@@ -73,9 +74,18 @@ export interface Season {
   episodeCount: number;
   episodes?: Episode[];
   ownedInVault?: boolean;
-  discsCount?: number;
+
+  // Season Specific Physical Specs (for non-complete boxsets)
   format?: PhysicalFormat;
+  edition?: string;
+  discsCount?: number;
+  condition?: Condition;
   shelfLocation?: string;
+  purchasePrice?: number;
+  purchaseRetailer?: string;
+  purchaseDate?: string;
+  barcode?: string;
+  notes?: string;
 }
 
 export interface MediaItem {
@@ -97,6 +107,7 @@ export interface MediaItem {
   numberOfEpisodes?: number; // For TV
   seasons?: Season[]; // For TV Shows
   isCompleteSeries?: boolean; // For TV Shows
+  tvCollectionType?: 'complete' | 'seasons' | 'individual';
   director?: string;
   cast?: string[];
   studio?: string;
@@ -188,3 +199,23 @@ export type ViewCategory =
   | 'api-settings'
   | 'user-management'
   | (string & {});
+
+export interface AutoBackupConfig {
+  enabled: boolean;
+  frequency: 'daily' | 'weekly' | 'every_12h' | 'every_6h';
+  backupTime: string;
+  retentionCount: number;
+  autoDownload: boolean;
+  lastBackupAt?: string;
+  nextBackupAt?: string;
+  backupLocation: string;
+}
+
+export interface BackupSnapshot {
+  id: string;
+  filename: string;
+  timestamp: string;
+  sizeBytes: number;
+  mediaCount: number;
+  userCount: number;
+}

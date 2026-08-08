@@ -7,9 +7,11 @@ import {
   XCircle, 
   Layers, 
   Star,
-  Film
+  Film,
+  Tag
 } from 'lucide-react';
 import { MediaItem, Season, PhysicalFormat } from '../types';
+import { formatPrice } from '../lib/currency';
 
 interface SeasonCardProps {
   parentItem: MediaItem;
@@ -29,6 +31,8 @@ export const SeasonCard: React.FC<SeasonCardProps> = ({
   const format: PhysicalFormat = season.format || parentItem.format;
   const discs = season.discsCount !== undefined ? season.discsCount : 1;
   const location = season.shelfLocation || parentItem.shelfLocation;
+  const price = season.purchasePrice !== undefined ? season.purchasePrice : (parentItem.isCompleteSeries ? parentItem.purchasePrice : undefined);
+  const retailer = season.purchaseRetailer || (parentItem.isCompleteSeries ? parentItem.purchaseRetailer : undefined);
 
   return (
     <div
@@ -87,10 +91,19 @@ export const SeasonCard: React.FC<SeasonCardProps> = ({
           </button>
         )}
 
-        {/* Rating overlay bottom left */}
-        <div className="absolute bottom-2 left-2 z-10 flex items-center gap-1 bg-slate-950/80 backdrop-blur-md px-1.5 py-0.5 rounded-md border border-slate-800 text-[10px] font-semibold text-amber-400">
-          <Star className="w-3 h-3 fill-amber-400" />
-          <span>{parentItem.rating ? parentItem.rating.toFixed(1) : '8.0'}</span>
+        {/* Rating & Price overlay bottom left */}
+        <div className="absolute bottom-2 left-2 z-10 flex items-center gap-1.5">
+          <div className="flex items-center gap-1 bg-slate-950/80 backdrop-blur-md px-1.5 py-0.5 rounded-md border border-slate-800 text-[10px] font-semibold text-amber-400">
+            <Star className="w-3 h-3 fill-amber-400" />
+            <span>{parentItem.rating ? parentItem.rating.toFixed(1) : '8.0'}</span>
+          </div>
+
+          {price !== undefined && (
+            <div className="bg-emerald-950/90 border border-emerald-500/60 backdrop-blur-md px-1.5 py-0.5 rounded-md text-[10px] font-mono font-bold text-emerald-300 flex items-center gap-1">
+              <Tag className="w-2.5 h-2.5 text-emerald-400" />
+              <span>{formatPrice(price)}</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -101,7 +114,7 @@ export const SeasonCard: React.FC<SeasonCardProps> = ({
             {season.name || `Season ${season.seasonNumber}`}
           </h4>
           <p className="text-[10px] text-slate-400 line-clamp-1">
-            {parentItem.title}
+            {parentItem.title} {retailer ? `• ${retailer}` : ''}
           </p>
         </div>
 

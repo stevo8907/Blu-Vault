@@ -1,18 +1,41 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, Key, CheckCircle, RefreshCw, Plus, Trash2, Power, Globe, Download, Upload, ShieldCheck, Loader2, AlertTriangle, Lock, ShieldAlert, X, Eye, EyeOff, RotateCcw, Server, Coins } from 'lucide-react';
-import { ApiConfig, User } from '../types';
-import { fetchApiConfigs, saveApiConfigs, testApiConfig, exportVaultBackup, importVaultBackup, resetSystemToDefault, restartSystem, powerOffSystem } from '../lib/api';
+import { 
+  Settings, Key, CheckCircle, RefreshCw, Plus, Trash2, Power, Globe, 
+  Download, Upload, ShieldCheck, Loader2, AlertTriangle, Lock, ShieldAlert, 
+  X, Eye, EyeOff, RotateCcw, Server, Coins, Sparkles, SlidersHorizontal, Database, Layers, Users,
+  Clock, Calendar, HardDrive, History, Play, Check, Save, FileJson, CheckSquare
+} from 'lucide-react';
+import { ApiConfig, User, AutoBackupConfig, BackupSnapshot } from '../types';
+import { 
+  fetchApiConfigs, saveApiConfigs, testApiConfig, exportVaultBackup, importVaultBackup, 
+  resetSystemToDefault, restartSystem, powerOffSystem,
+  fetchAutoBackupConfig, saveAutoBackupConfig, triggerAutoBackupNow, deleteBackupSnapshot, restoreBackupSnapshot, downloadBackupSnapshot
+} from '../lib/api';
 import { CURRENCY_OPTIONS, getSavedCurrencyCode, setSavedCurrencyCode, formatPrice } from '../lib/currency';
 import { NavigationSettingsSection } from './NavigationSettingsSection';
 import { LogoSelectorCard } from './LogoIcon';
+import { UserManagementView } from './UserManagementView';
 
 interface ApiSettingsViewProps {
   currentUser?: User | null;
+  users?: User[];
+  onRefreshUsers?: () => void;
   onMediaImported?: () => void;
   onSystemReset?: () => void;
 }
 
-export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, onMediaImported, onSystemReset }) => {
+type SettingsTab = 'api' | 'users' | 'branding' | 'navigation' | 'currency' | 'data' | 'system';
+
+interface TabItem {
+  id: SettingsTab;
+  label: string;
+  badge?: string;
+  description: string;
+  icon: React.FC<{ className?: string }>;
+}
+
+export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, users, onRefreshUsers, onMediaImported, onSystemReset }) => {
+  const [activeTab, setActiveTab] = useState<SettingsTab>('api');
 
   const [configs, setConfigs] = useState<ApiConfig[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -39,6 +62,97 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, o
 
   // Import JSON File ref
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Automated Backup System State
+  const [autoBackupConfig, setAutoBackupConfig] = useState<AutoBackupConfig>({
+    enabled: true,
+    frequency: 'daily',
+    backupTime: '02:00',
+    retentionCount: 10,
+    autoDownload: false,
+    backupLocation: '/data/backups/'
+  });
+  const [backupSnapshots, setBackupSnapshots] = useState<BackupSnapshot[]>([]);
+  const [isAutoBackupLoading, setIsAutoBackupLoading] = useState(false);
+  const [isSavingAutoBackup, setIsSavingAutoBackup] = useState(false);
+  const [isTriggeringBackup, setIsTriggeringBackup] = useState(false);
+  const [snapshotRestoringId, setSnapshotRestoringId] = useState<string | null>(null);
+  const [autoBackupNotice, setAutoBackupNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const loadAutoBackupData = async () => {
+    setIsAutoBackupLoading(true);
+    try {
+      const { config, snapshots } = await fetchAutoBackupConfig();
+      if (config) setAutoBackupConfig(config);
+      setBackupSnapshots(snapshots || []);
+    } catch (err: any) {
+      console.error('Error loading auto backup config:', err);
+    } finally {
+      setIsAutoBackupLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'data') {
+      loadAutoBackupData();
+    }
+  }, [activeTab]);
+
+  const handleSaveAutoBackupSettings = async () => {
+    setIsSavingAutoBackup(true);
+    setAutoBackupNotice(null);
+    try {
+      const updated = await saveAutoBackupConfig(autoBackupConfig);
+      setAutoBackupConfig(updated);
+      setAutoBackupNotice({ type: 'success', message: 'Automated backup schedule updated successfully!' });
+    } catch (err: any) {
+      setAutoBackupNotice({ type: 'error', message: err.message || 'Failed to save automated backup schedule.' });
+    } finally {
+      setIsSavingAutoBackup(false);
+    }
+  };
+
+  const handleTriggerBackupNow = async () => {
+    setIsTriggeringBackup(true);
+    setAutoBackupNotice(null);
+    try {
+      const res = await triggerAutoBackupNow();
+      if (res.config) setAutoBackupConfig(res.config);
+      if (res.snapshots) setBackupSnapshots(res.snapshots);
+      setAutoBackupNotice({ type: 'success', message: `Backup created: ${res.message}` });
+    } catch (err: any) {
+      setAutoBackupNotice({ type: 'error', message: err.message || 'Failed to create backup snapshot.' });
+    } finally {
+      setIsTriggeringBackup(false);
+    }
+  };
+
+  const handleDeleteSnapshot = async (id: string) => {
+    if (!confirm(`Are you sure you want to delete backup snapshot "${id}"?`)) return;
+    try {
+      const updated = await deleteBackupSnapshot(id);
+      setBackupSnapshots(updated);
+      setAutoBackupNotice({ type: 'success', message: `Snapshot ${id} deleted.` });
+    } catch (err: any) {
+      setAutoBackupNotice({ type: 'error', message: err.message || 'Failed to delete snapshot.' });
+    }
+  };
+
+  const handleRestoreSnapshot = async (id: string) => {
+    if (!confirm(`RESTORE DATABASE WARNING: This will overwrite your current collection with snapshot "${id}". Continue?`)) return;
+    setSnapshotRestoringId(id);
+    setAutoBackupNotice(null);
+    try {
+      await restoreBackupSnapshot(id);
+      setAutoBackupNotice({ type: 'success', message: `Database successfully restored from ${id}!` });
+      if (onMediaImported) onMediaImported();
+    } catch (err: any) {
+      setAutoBackupNotice({ type: 'error', message: err.message || 'Restore failed.' });
+    } finally {
+      setSnapshotRestoringId(null);
+    }
+  };
+
 
   const loadConfigs = async () => {
     setIsLoading(true);
@@ -162,344 +276,748 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, o
     reader.readAsText(file);
   };
 
+  const SETTINGS_TABS: TabItem[] = [
+    { 
+      id: 'api', 
+      label: 'API Keys & Metadata', 
+      badge: `${configs.length}`, 
+      description: 'Configure TMDB & external providers', 
+      icon: Key 
+    },
+    { 
+      id: 'users', 
+      label: 'Users & Permissions', 
+      badge: users ? `${users.length}` : undefined, 
+      description: 'Add or modify user profiles and permissions', 
+      icon: Users 
+    },
+    { 
+      id: 'branding', 
+      label: 'Logo & Branding', 
+      description: 'Customize header logo & title', 
+      icon: Sparkles 
+    },
+    { 
+      id: 'navigation', 
+      label: 'Navigation & Menus', 
+      description: 'Customize category items & filters', 
+      icon: SlidersHorizontal 
+    },
+    { 
+      id: 'currency', 
+      label: 'Currency & Region', 
+      badge: selectedCurrency, 
+      description: 'Set vault pricing currency format', 
+      icon: Coins 
+    },
+    { 
+      id: 'data', 
+      label: 'Database & Backup', 
+      description: 'Export JSON or restore backup', 
+      icon: Database 
+    },
+    { 
+      id: 'system', 
+      label: 'System & Power', 
+      badge: currentUser?.role === 'admin' ? 'Admin' : undefined,
+      description: 'Reboot, shutdown & factory reset', 
+      icon: Server 
+    },
+  ];
+
   return (
-    <div className="space-y-6 animate-fade-in max-w-4xl mx-auto">
-      {/* Header */}
+    <div className="space-y-6 animate-fade-in max-w-5xl mx-auto">
+      {/* Settings Header */}
       <div className="bg-gradient-to-r from-slate-900 via-slate-900 to-slate-950 border border-slate-800 rounded-3xl p-6 sm:p-8 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xl">
         <div className="flex items-center gap-4">
-          <div className="p-3.5 rounded-2xl bg-blue-500/10 text-blue-400 border border-blue-500/20 shadow-inner">
+          <div className="p-3.5 rounded-2xl bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 shadow-inner">
             <Settings className="w-8 h-8" />
           </div>
           <div>
-            <h2 className="text-2xl font-black text-white tracking-wide">API Keys & External Services</h2>
+            <h2 className="text-2xl font-black text-white tracking-wide">System Settings</h2>
             <p className="text-xs text-slate-400 font-mono">
-              Configure TMDB API v3 key, add/remove custom APIs, or manage database backups
+              Manage API keys, visual branding, menu options, currency format, and server controls
             </p>
           </div>
         </div>
-
-        <button
-          onClick={() => setShowAddModal(true)}
-          className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-md flex items-center gap-2 transition-all shrink-0"
-        >
-          <Plus className="w-4 h-4" />
-          <span>+ Add Custom API</span>
-        </button>
       </div>
 
-      {/* API LIST SECTION */}
-      <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 space-y-6">
-        <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-          <div>
-            <h3 className="font-extrabold text-base text-white">Configured Media Metadata Providers</h3>
-            <p className="text-xs text-slate-400">TMDB API is the primary search engine for Blu-Vault</p>
-          </div>
-
-          <button
-            onClick={handleSaveKeys}
-            className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-md"
-          >
-            Save All Keys
-          </button>
-        </div>
-
-        {isLoading ? (
-          <div className="py-8 text-center text-slate-400">
-            <Loader2 className="w-6 h-6 animate-spin mx-auto text-blue-500" />
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {configs.map((api) => (
-              <div
-                key={api.id}
-                className={`p-5 rounded-2xl border transition-all ${
-                  api.enabled ? 'bg-slate-950 border-slate-800' : 'bg-slate-950/40 border-slate-800/50 opacity-60'
-                }`}
-              >
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-3">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 text-cyan-400">
-                      <Globe className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h4 className="font-bold text-sm text-white">{api.name}</h4>
-                        {api.isPrimary && (
-                          <span className="px-2 py-0.5 rounded bg-blue-950 text-blue-300 border border-blue-700 text-[10px] font-mono font-bold uppercase">
-                            Primary API
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-xs text-slate-400 font-mono">{api.baseUrl}</p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => handleToggleEnable(api.id)}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
-                        api.enabled
-                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                          : 'bg-slate-800 text-slate-400'
-                      }`}
-                    >
-                      <Power className="w-3.5 h-3.5" />
-                      <span>{api.enabled ? 'Enabled' : 'Disabled'}</span>
-                    </button>
-
-                    <button
-                      onClick={() => handleTestConnection(api)}
-                      disabled={isTesting === api.id}
-                      className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition-all flex items-center gap-1"
-                    >
-                      {isTesting === api.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5 text-cyan-400" />}
-                      <span>Test Connection</span>
-                    </button>
-
-                    {!api.isPrimary && (
-                      <button
-                        onClick={() => handleRemoveApi(api.id)}
-                        className="p-1.5 rounded-xl text-rose-400 hover:bg-rose-950/40 border border-rose-900/40 transition-colors"
-                        title="Remove API"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* API Key Input */}
-                <div className="pt-3 border-t border-slate-900 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-                  <div className="relative flex-1">
-                    <Key className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="password"
-                      placeholder={`Enter ${api.name} API Key...`}
-                      value={api.apiKey || ''}
-                      onChange={(e) => handleKeyChange(api.id, e.target.value)}
-                      className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-9 pr-3 py-2 text-xs text-white font-mono focus:border-blue-500 focus:outline-none"
-                    />
-                  </div>
-                </div>
-
-                {/* Test Result Message */}
-                {testResult && testResult.id === api.id && (
-                  <div className={`mt-3 p-3 rounded-xl text-xs font-mono flex items-center gap-2 ${
-                    testResult.success ? 'bg-emerald-950/50 text-emerald-300 border border-emerald-800' : 'bg-rose-950/50 text-rose-300 border border-rose-800'
-                  }`}>
-                    <CheckCircle className="w-4 h-4 shrink-0" />
-                    <span>{testResult.message}</span>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* BLU-VAULT LOGO BRANDING CUSTOMIZER */}
-      <LogoSelectorCard />
-
-      {/* VIDEO GAME METADATA INTEGRATIONS - GREYED OUT NON-FUNCTIONAL */}
-      <div className="bg-slate-900/40 border border-slate-800/60 rounded-3xl p-6 space-y-3 opacity-60">
-        <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
-          <div>
-            <h3 className="font-extrabold text-base text-slate-400 line-through">Video Game Metadata Providers (IGDB / RAWG)</h3>
-            <p className="text-xs text-slate-500 font-mono">Automatic game cover art and metadata lookups</p>
-          </div>
-          <span className="px-3 py-1 rounded-full bg-slate-800 text-slate-400 border border-slate-700 text-xs font-mono font-bold">
-            Feature not currently functional
-          </span>
-        </div>
-        <p className="text-xs text-slate-500 italic">
-          Video Game Library indexing is greyed out and currently non-functional in this release of Blu-Vault.
-        </p>
-      </div>
-
-      {/* NAVIGATION & HAMBURGER MENU CUSTOMIZER */}
-      <NavigationSettingsSection />
-
-      {/* CURRENCY & LOCALIZATION SETTINGS */}
-      <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
-          <div>
-            <h3 className="font-extrabold text-base text-white flex items-center gap-2">
-              <Coins className="w-5 h-5 text-emerald-400" /> System Currency & Location Setting
-            </h3>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Select your region's currency for purchase prices, vault valuation, and analytics display across Blu-Vault.
-            </p>
-          </div>
-          <div className="px-3.5 py-1.5 rounded-xl bg-emerald-950/80 border border-emerald-800/80 text-emerald-300 font-mono text-xs font-bold flex items-center gap-2 self-start sm:self-auto">
-            <span>Sample Format:</span>
-            <span className="text-white bg-slate-950 px-2 py-0.5 rounded border border-emerald-700/50">
-              {formatPrice(24.99, selectedCurrency)}
-            </span>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 pt-1">
-          {CURRENCY_OPTIONS.map((c) => {
-            const isSelected = selectedCurrency === c.code;
+      {/* TOP MENU BAR FOR SETTINGS PAGES */}
+      <div className="bg-slate-900/90 border border-slate-800/90 rounded-2xl p-2 shadow-xl backdrop-blur-md sticky top-2 z-30">
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar scroll-smooth">
+          {SETTINGS_TABS.map((tab) => {
+            const IconComponent = tab.icon;
+            const isActive = activeTab === tab.id;
             return (
               <button
-                key={c.code}
-                type="button"
-                onClick={() => {
-                  setSelectedCurrency(c.code);
-                  setSavedCurrencyCode(c.code);
-                }}
-                className={`p-3 rounded-2xl border text-left transition-all flex flex-col justify-between space-y-1 ${
-                  isSelected
-                    ? 'bg-gradient-to-tr from-emerald-950/90 to-slate-900 border-emerald-500 text-white shadow-lg shadow-emerald-950/50 ring-2 ring-emerald-500/30 scale-[1.02]'
-                    : 'bg-slate-950/60 hover:bg-slate-800/80 border-slate-800/90 text-slate-300 hover:border-slate-700'
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`px-4 py-3 rounded-xl font-bold text-xs transition-all flex items-center gap-2.5 whitespace-nowrap shrink-0 group ${
+                  isActive
+                    ? 'bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow-lg shadow-cyan-950/60 ring-1 ring-cyan-400/30'
+                    : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/80 border border-transparent'
                 }`}
               >
-                <div className="flex items-center justify-between">
-                  <span className="text-lg">{c.flag}</span>
-                  <span className={`font-mono text-xs font-extrabold ${isSelected ? 'text-emerald-300' : 'text-slate-400'}`}>
-                    {c.symbol}
+                <IconComponent className={`w-4 h-4 transition-transform group-hover:scale-110 ${isActive ? 'text-white' : 'text-slate-400 group-hover:text-cyan-400'}`} />
+                <span>{tab.label}</span>
+                {tab.badge && (
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-extrabold ${
+                    isActive 
+                      ? 'bg-white/20 text-white border border-white/30' 
+                      : 'bg-slate-800 text-slate-400 border border-slate-700'
+                  }`}>
+                    {tab.badge}
                   </span>
-                </div>
-                <div>
-                  <div className="font-extrabold text-xs tracking-wide">{c.code}</div>
-                  <div className="text-[10px] text-slate-400 truncate">{c.name}</div>
-                </div>
+                )}
               </button>
             );
           })}
         </div>
       </div>
 
-      {/* DATABASE BACKUP & EXPORT/IMPORT SECTION */}
-      <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 space-y-4">
-        <h3 className="font-extrabold text-base text-white flex items-center gap-2">
-          <Download className="w-5 h-5 text-cyan-400" /> Database Backup & Migration
-        </h3>
-        <p className="text-xs text-slate-400">
-          Export your entire Blu-Vault database (movies, TV shows, box sets, shelf locations, loans) as a JSON file or restore a backup.
-        </p>
+      {/* TAB CONTENT AREAS */}
 
-        <div className="flex flex-wrap items-center gap-3 pt-2">
-          <button
-            onClick={exportVaultBackup}
-            className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all shadow-md flex items-center gap-2"
-          >
-            <Download className="w-4 h-4" />
-            <span>Export Database (JSON)</span>
-          </button>
-
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 transition-all flex items-center gap-2"
-          >
-            <Upload className="w-4 h-4 text-cyan-400" />
-            <span>Restore Backup File</span>
-          </button>
-
-          <input
-            type="file"
-            ref={fileInputRef}
-            accept=".json"
-            onChange={handleImportFileChange}
-            className="hidden"
+      {/* PAGE: USERS & PERMISSIONS MANAGEMENT */}
+      {activeTab === 'users' && (
+        <div className="animate-fade-in">
+          <UserManagementView
+            users={users || []}
+            currentUser={currentUser || null}
+            onRefreshUsers={onRefreshUsers || (() => {})}
           />
         </div>
-      </div>
+      )}
 
-      {/* SYSTEM POWER CONTROLS & FACTORY RESET SECTION (ADMIN ONLY) */}
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-6">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-2xl bg-amber-500/10 text-amber-400 border border-amber-500/20">
-            <Server className="w-6 h-6" />
+      {/* PAGE 1: API KEYS & METADATA PROVIDERS */}
+      {activeTab === 'api' && (
+        <div className="space-y-6 animate-fade-in">
+          <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 space-y-6">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+              <div>
+                <h3 className="font-extrabold text-base text-white flex items-center gap-2">
+                  <Globe className="w-5 h-5 text-blue-400" /> Configured Media Metadata Providers
+                </h3>
+                <p className="text-xs text-slate-400">TMDB API is the primary search engine for Blu-Vault</p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowAddModal(true)}
+                  className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-md flex items-center gap-1.5 transition-all"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Add Custom API</span>
+                </button>
+
+                <button
+                  onClick={handleSaveKeys}
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-md"
+                >
+                  Save All Keys
+                </button>
+              </div>
+            </div>
+
+            {isLoading ? (
+              <div className="py-8 text-center text-slate-400">
+                <Loader2 className="w-6 h-6 animate-spin mx-auto text-blue-500" />
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {configs.map((api) => (
+                  <div
+                    key={api.id}
+                    className={`p-5 rounded-2xl border transition-all ${
+                      api.enabled ? 'bg-slate-950 border-slate-800' : 'bg-slate-950/40 border-slate-800/50 opacity-60'
+                    }`}
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-3">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 text-cyan-400">
+                          <Globe className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h4 className="font-bold text-sm text-white">{api.name}</h4>
+                            {api.isPrimary && (
+                              <span className="px-2 py-0.5 rounded bg-blue-950 text-blue-300 border border-blue-700 text-[10px] font-mono font-bold uppercase">
+                                Primary API
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-slate-400 font-mono">{api.baseUrl}</p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => handleToggleEnable(api.id)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all ${
+                            api.enabled
+                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                              : 'bg-slate-800 text-slate-400'
+                          }`}
+                        >
+                          <Power className="w-3.5 h-3.5" />
+                          <span>{api.enabled ? 'Enabled' : 'Disabled'}</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleTestConnection(api)}
+                          disabled={isTesting === api.id}
+                          className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition-all flex items-center gap-1"
+                        >
+                          {isTesting === api.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5 text-cyan-400" />}
+                          <span>Test Connection</span>
+                        </button>
+
+                        {!api.isPrimary && (
+                          <button
+                            onClick={() => handleRemoveApi(api.id)}
+                            className="p-1.5 rounded-xl text-rose-400 hover:bg-rose-950/40 border border-rose-900/40 transition-colors"
+                            title="Remove API"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* API Key Input */}
+                    <div className="pt-3 border-t border-slate-900 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                      <div className="relative flex-1">
+                        <Key className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="password"
+                          placeholder={`Enter ${api.name} API Key...`}
+                          value={api.apiKey || ''}
+                          onChange={(e) => handleKeyChange(api.id, e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-9 pr-3 py-2 text-xs text-white font-mono focus:border-blue-500 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Test Result Message */}
+                    {testResult && testResult.id === api.id && (
+                      <div className={`mt-3 p-3 rounded-xl text-xs font-mono flex items-center gap-2 ${
+                        testResult.success ? 'bg-emerald-950/50 text-emerald-300 border border-emerald-800' : 'bg-rose-950/50 text-rose-300 border border-rose-800'
+                      }`}>
+                        <CheckCircle className="w-4 h-4 shrink-0" />
+                        <span>{testResult.message}</span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="font-extrabold text-base text-white">System Power Controls & Management</h3>
-              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase bg-amber-950 text-amber-300 border border-amber-800">
-                Administrator
+
+          {/* VIDEO GAME METADATA INTEGRATIONS - GREYED OUT NON-FUNCTIONAL */}
+          <div className="bg-slate-900/40 border border-slate-800/60 rounded-3xl p-6 space-y-3 opacity-60">
+            <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
+              <div>
+                <h3 className="font-extrabold text-base text-slate-400 line-through">Video Game Metadata Providers (IGDB / RAWG)</h3>
+                <p className="text-xs text-slate-500 font-mono">Automatic game cover art and metadata lookups</p>
+              </div>
+              <span className="px-3 py-1 rounded-full bg-slate-800 text-slate-400 border border-slate-700 text-xs font-mono font-bold">
+                Feature not currently functional
               </span>
             </div>
-            <p className="text-xs text-slate-400">
-              Manage the server runtime instance, restart service processes, power off system, or execute factory resets.
+            <p className="text-xs text-slate-500 italic">
+              Video Game Library indexing is greyed out and currently non-functional in this release of Blu-Vault.
             </p>
           </div>
         </div>
+      )}
 
-        {(!currentUser || currentUser.role === 'admin') ? (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
-            {/* RESTART SYSTEM BUTTON */}
-            <button
-              onClick={() => {
-                setResetPassword('');
-                setResetError('');
-                setActionTarget('restart');
-                setResetStep('password');
-              }}
-              className="p-4 rounded-2xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-amber-500/50 text-left transition-all group flex flex-col justify-between space-y-3"
-            >
-              <div className="flex items-center justify-between">
-                <div className="p-2 rounded-xl bg-amber-500/10 text-amber-400 group-hover:bg-amber-500 group-hover:text-slate-950 transition-colors">
-                  <RotateCcw className="w-5 h-5" />
-                </div>
-                <span className="text-[10px] font-mono font-bold text-slate-500 group-hover:text-amber-400">SOFT REBOOT</span>
-              </div>
-              <div>
-                <h4 className="font-bold text-xs text-white group-hover:text-amber-300">System Restart</h4>
-                <p className="text-[11px] text-slate-400 mt-0.5">Reboots the Express backend runtime service.</p>
-              </div>
-            </button>
+      {/* PAGE 2: LOGO & VISUAL BRANDING */}
+      {activeTab === 'branding' && (
+        <div className="animate-fade-in">
+          <LogoSelectorCard />
+        </div>
+      )}
 
-            {/* POWER OFF BUTTON */}
-            <button
-              onClick={() => {
-                setResetPassword('');
-                setResetError('');
-                setActionTarget('poweroff');
-                setResetStep('password');
-              }}
-              className="p-4 rounded-2xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-rose-500/50 text-left transition-all group flex flex-col justify-between space-y-3"
-            >
-              <div className="flex items-center justify-between">
-                <div className="p-2 rounded-xl bg-rose-500/10 text-rose-400 group-hover:bg-rose-500 group-hover:text-slate-950 transition-colors">
-                  <Power className="w-5 h-5" />
-                </div>
-                <span className="text-[10px] font-mono font-bold text-slate-500 group-hover:text-rose-400">SHUTDOWN</span>
-              </div>
-              <div>
-                <h4 className="font-bold text-xs text-white group-hover:text-rose-300">System Power Off</h4>
-                <p className="text-[11px] text-slate-400 mt-0.5">Safely shuts down the Blu-Vault service process.</p>
-              </div>
-            </button>
+      {/* PAGE 3: NAVIGATION & MENUS */}
+      {activeTab === 'navigation' && (
+        <div className="animate-fade-in">
+          <NavigationSettingsSection />
+        </div>
+      )}
 
-            {/* FACTORY RESET BUTTON */}
-            <button
-              onClick={() => {
-                setResetPassword('');
-                setResetError('');
-                setActionTarget('reset');
-                setResetStep('password');
-              }}
-              className="p-4 rounded-2xl bg-rose-950/40 hover:bg-rose-900/40 border border-rose-900/60 hover:border-rose-500/80 text-left transition-all group flex flex-col justify-between space-y-3"
-            >
-              <div className="flex items-center justify-between">
-                <div className="p-2 rounded-xl bg-rose-600/20 text-rose-400 group-hover:bg-rose-600 group-hover:text-white transition-colors">
-                  <AlertTriangle className="w-5 h-5" />
-                </div>
-                <span className="text-[10px] font-mono font-bold text-rose-400/80">WIPE DB</span>
-              </div>
+      {/* PAGE 4: CURRENCY & LOCALIZATION */}
+      {activeTab === 'currency' && (
+        <div className="animate-fade-in">
+          <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
               <div>
-                <h4 className="font-bold text-xs text-rose-200 group-hover:text-white">Factory Reset System</h4>
-                <p className="text-[11px] text-rose-300/70 mt-0.5">Clears database and returns to OOBE setup.</p>
+                <h3 className="font-extrabold text-base text-white flex items-center gap-2">
+                  <Coins className="w-5 h-5 text-emerald-400" /> System Currency & Location Setting
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Select your region's currency for purchase prices, vault valuation, and analytics display across Blu-Vault.
+                </p>
               </div>
-            </button>
+              <div className="px-3.5 py-1.5 rounded-xl bg-emerald-950/80 border border-emerald-800/80 text-emerald-300 font-mono text-xs font-bold flex items-center gap-2 self-start sm:self-auto">
+                <span>Sample Format:</span>
+                <span className="text-white bg-slate-950 px-2 py-0.5 rounded border border-emerald-700/50">
+                  {formatPrice(24.99, selectedCurrency)}
+                </span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 pt-1">
+              {CURRENCY_OPTIONS.map((c) => {
+                const isSelected = selectedCurrency === c.code;
+                return (
+                  <button
+                    key={c.code}
+                    type="button"
+                    onClick={() => {
+                      setSelectedCurrency(c.code);
+                      setSavedCurrencyCode(c.code);
+                    }}
+                    className={`p-3 rounded-2xl border text-left transition-all flex flex-col justify-between space-y-1 ${
+                      isSelected
+                        ? 'bg-gradient-to-tr from-emerald-950/90 to-slate-900 border-emerald-500 text-white shadow-lg shadow-emerald-950/50 ring-2 ring-emerald-500/30 scale-[1.02]'
+                        : 'bg-slate-950/60 hover:bg-slate-800/80 border-slate-800/90 text-slate-300 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-lg">{c.flag}</span>
+                      <span className={`font-mono text-xs font-extrabold ${isSelected ? 'text-emerald-300' : 'text-slate-400'}`}>
+                        {c.symbol}
+                      </span>
+                    </div>
+                    <div>
+                      <div className="font-extrabold text-xs tracking-wide">{c.code}</div>
+                      <div className="text-[10px] text-slate-400 truncate">{c.name}</div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        ) : (
-          <div className="p-3 bg-slate-950/60 border border-slate-800 rounded-xl text-xs text-slate-400">
-            ⚠️ Only Administrator accounts have authorization to execute system power management or factory resets.
+        </div>
+      )}
+
+      {/* PAGE 5: DATABASE & BACKUP */}
+      {activeTab === 'data' && (
+        <div className="space-y-6 animate-fade-in">
+          {/* NOTICE BANNER */}
+          {autoBackupNotice && (
+            <div className={`p-4 rounded-2xl text-xs font-mono flex items-center justify-between gap-3 ${
+              autoBackupNotice.type === 'success' 
+                ? 'bg-emerald-950/80 text-emerald-200 border border-emerald-800' 
+                : 'bg-rose-950/80 text-rose-200 border border-rose-800'
+            }`}>
+              <div className="flex items-center gap-2">
+                <CheckSquare className="w-4 h-4 shrink-0" />
+                <span>{autoBackupNotice.message}</span>
+              </div>
+              <button 
+                onClick={() => setAutoBackupNotice(null)}
+                className="text-slate-400 hover:text-white text-xs font-bold"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {/* CARD 1: MANUAL EXPORT & RESTORE */}
+          <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 space-y-4">
+            <h3 className="font-extrabold text-base text-white flex items-center gap-2">
+              <Download className="w-5 h-5 text-cyan-400" /> Database Backup & Migration
+            </h3>
+            <p className="text-xs text-slate-400">
+              Export your entire Blu-Vault database (movies, TV shows, box sets, shelf locations, loans) as a JSON file or restore a backup file.
+            </p>
+
+            <div className="flex flex-wrap items-center gap-3 pt-2">
+              <button
+                onClick={exportVaultBackup}
+                className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all shadow-md flex items-center gap-2"
+              >
+                <Download className="w-4 h-4" />
+                <span>Export Database (JSON)</span>
+              </button>
+
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 transition-all flex items-center gap-2"
+              >
+                <Upload className="w-4 h-4 text-cyan-400" />
+                <span>Restore Backup File</span>
+              </button>
+
+              <input
+                type="file"
+                ref={fileInputRef}
+                accept=".json"
+                onChange={handleImportFileChange}
+                className="hidden"
+              />
+            </div>
           </div>
-        )}
-      </div>
+
+          {/* CARD 2: AUTOMATED BACKUP SCHEDULE & SETTINGS */}
+          <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+              <div>
+                <h3 className="font-extrabold text-base text-white flex items-center gap-2">
+                  <Clock className="w-5 h-5 text-emerald-400" /> Automated Database Backup System
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Configure automatic background snapshots, retention policies, and interval triggers to keep your media vault safe.
+                </p>
+              </div>
+
+              {/* ENABLED BADGE */}
+              <div className="self-start sm:self-auto">
+                <span className={`px-3 py-1 rounded-full text-xs font-mono font-bold border flex items-center gap-1.5 ${
+                  autoBackupConfig.enabled
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                    : 'bg-slate-800 text-slate-400 border-slate-700'
+                }`}>
+                  <span className={`w-2 h-2 rounded-full ${autoBackupConfig.enabled ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+                  {autoBackupConfig.enabled ? 'Automated Backups Active' : 'Automated Backups Disabled'}
+                </span>
+              </div>
+            </div>
+
+            {/* STATUS STATS GRID */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="p-3.5 rounded-2xl bg-slate-950/70 border border-slate-800">
+                <div className="text-[10px] font-mono text-slate-400 uppercase tracking-wider flex items-center gap-1 mb-1">
+                  <History className="w-3.5 h-3.5 text-cyan-400" /> Last Auto-Backup
+                </div>
+                <div className="text-xs font-bold text-white truncate">
+                  {autoBackupConfig.lastBackupAt ? new Date(autoBackupConfig.lastBackupAt).toLocaleString() : 'Never run yet'}
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-2xl bg-slate-950/70 border border-slate-800">
+                <div className="text-[10px] font-mono text-slate-400 uppercase tracking-wider flex items-center gap-1 mb-1">
+                  <Calendar className="w-3.5 h-3.5 text-amber-400" /> Next Backup Run
+                </div>
+                <div className="text-xs font-bold text-amber-300 truncate">
+                  {autoBackupConfig.nextBackupAt ? new Date(autoBackupConfig.nextBackupAt).toLocaleString() : 'Scheduled on trigger'}
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-2xl bg-slate-950/70 border border-slate-800">
+                <div className="text-[10px] font-mono text-slate-400 uppercase tracking-wider flex items-center gap-1 mb-1">
+                  <FileJson className="w-3.5 h-3.5 text-emerald-400" /> Snapshots Saved
+                </div>
+                <div className="text-xs font-bold text-emerald-300">
+                  {backupSnapshots.length} Files stored
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-2xl bg-slate-950/70 border border-slate-800">
+                <div className="text-[10px] font-mono text-slate-400 uppercase tracking-wider flex items-center gap-1 mb-1">
+                  <HardDrive className="w-3.5 h-3.5 text-purple-400" /> Vault Location
+                </div>
+                <div className="text-xs font-mono font-bold text-purple-300 truncate" title={autoBackupConfig.backupLocation}>
+                  {autoBackupConfig.backupLocation || '/data/backups/'}
+                </div>
+              </div>
+            </div>
+
+            {/* CONFIGURATION FORM */}
+            <div className="space-y-4 pt-2">
+              <div className="flex items-center justify-between p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800">
+                <div>
+                  <div className="text-xs font-bold text-white">Enable Automatic Scheduled Backups</div>
+                  <div className="text-[11px] text-slate-400">Automatically creates database snapshots on the server</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAutoBackupConfig(prev => ({ ...prev, enabled: !prev.enabled }))}
+                  className={`w-12 h-6 rounded-full p-1 transition-colors relative ${
+                    autoBackupConfig.enabled ? 'bg-emerald-600' : 'bg-slate-800'
+                  }`}
+                >
+                  <div className={`w-4 h-4 rounded-full bg-white transition-transform ${
+                    autoBackupConfig.enabled ? 'translate-x-6' : 'translate-x-0'
+                  }`} />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {/* FREQUENCY */}
+                <div>
+                  <label className="text-xs font-bold text-slate-300 block mb-1.5 flex items-center gap-1">
+                    <Calendar className="w-3.5 h-3.5 text-cyan-400" /> Backup Frequency
+                  </label>
+                  <select
+                    value={autoBackupConfig.frequency}
+                    onChange={(e) => setAutoBackupConfig(prev => ({ ...prev, frequency: e.target.value as any }))}
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-cyan-500 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none"
+                  >
+                    <option value="daily">Daily (Every 24 Hours)</option>
+                    <option value="weekly">Weekly (Every 7 Days)</option>
+                    <option value="every_12h">Every 12 Hours</option>
+                    <option value="every_6h">Every 6 Hours</option>
+                  </select>
+                </div>
+
+                {/* BACKUP TIME */}
+                <div>
+                  <label className="text-xs font-bold text-slate-300 block mb-1.5 flex items-center gap-1">
+                    <Clock className="w-3.5 h-3.5 text-amber-400" /> Preferred Execution Time
+                  </label>
+                  <input
+                    type="time"
+                    value={autoBackupConfig.backupTime || '02:00'}
+                    onChange={(e) => setAutoBackupConfig(prev => ({ ...prev, backupTime: e.target.value }))}
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-xl px-3 py-2 text-xs text-white focus:outline-none font-mono"
+                  />
+                </div>
+
+                {/* RETENTION COUNT */}
+                <div>
+                  <label className="text-xs font-bold text-slate-300 block mb-1.5 flex items-center gap-1">
+                    <HardDrive className="w-3.5 h-3.5 text-purple-400" /> Retention Limit
+                  </label>
+                  <select
+                    value={autoBackupConfig.retentionCount}
+                    onChange={(e) => setAutoBackupConfig(prev => ({ ...prev, retentionCount: parseInt(e.target.value, 10) }))}
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-purple-500 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none"
+                  >
+                    <option value={5}>Keep Last 5 Backups</option>
+                    <option value={10}>Keep Last 10 Backups</option>
+                    <option value={20}>Keep Last 20 Backups</option>
+                    <option value={30}>Keep Last 30 Backups</option>
+                    <option value={50}>Keep Last 50 Backups</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* ACTION BUTTONS */}
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={handleSaveAutoBackupSettings}
+                  disabled={isSavingAutoBackup}
+                  className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs shadow-md transition-all flex items-center gap-2 disabled:opacity-50"
+                >
+                  {isSavingAutoBackup ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-emerald-200" />
+                  ) : (
+                    <Save className="w-4 h-4 text-emerald-200" />
+                  )}
+                  <span>Save Backup Schedule</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleTriggerBackupNow}
+                  disabled={isTriggeringBackup}
+                  className="px-5 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs shadow-md transition-all flex items-center gap-2 disabled:opacity-50"
+                >
+                  {isTriggeringBackup ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-cyan-200" />
+                  ) : (
+                    <Play className="w-4 h-4 text-cyan-200" />
+                  )}
+                  <span>Trigger Immediate Backup Now</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* CARD 3: AUTOMATED SNAPSHOTS HISTORY & MANAGEMENT */}
+          <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="font-extrabold text-base text-white flex items-center gap-2">
+                  <History className="w-5 h-5 text-cyan-400" /> Vault Backup Snapshots History
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Browse stored database snapshots. You can download JSON files or restore your collection with one click.
+                </p>
+              </div>
+
+              <span className="px-3 py-1 rounded-full bg-slate-950 border border-slate-800 text-slate-300 font-mono text-xs font-bold">
+                {backupSnapshots.length} Snapshots
+              </span>
+            </div>
+
+            {backupSnapshots.length === 0 ? (
+              <div className="p-8 rounded-2xl bg-slate-950/60 border border-slate-800/80 text-center space-y-2">
+                <FileJson className="w-8 h-8 text-slate-500 mx-auto" />
+                <p className="text-xs text-slate-400">No automated backup snapshots created yet.</p>
+                <button
+                  onClick={handleTriggerBackupNow}
+                  className="text-xs font-bold text-cyan-400 hover:underline"
+                >
+                  Create first snapshot now
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2.5 max-h-[400px] overflow-y-auto custom-scrollbar pr-1">
+                {backupSnapshots.map((snap) => (
+                  <div
+                    key={snap.id}
+                    className="p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800 hover:border-slate-700 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="p-2.5 rounded-xl bg-cyan-950/60 border border-cyan-800/60 text-cyan-400 shrink-0">
+                        <FileJson className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-white font-mono">{snap.filename}</div>
+                        <div className="text-[11px] text-slate-400 font-mono flex items-center gap-2 mt-0.5">
+                          <span>{new Date(snap.timestamp).toLocaleString()}</span>
+                          <span>•</span>
+                          <span className="text-cyan-300">{snap.mediaCount} Media Items</span>
+                          <span>•</span>
+                          <span>{(snap.sizeBytes / 1024).toFixed(1)} KB</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => downloadBackupSnapshot(snap.id)}
+                        className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-cyan-300 text-xs font-bold transition-all flex items-center gap-1.5"
+                        title="Download JSON Snapshot"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Download</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleRestoreSnapshot(snap.id)}
+                        disabled={snapshotRestoringId === snap.id}
+                        className="px-3 py-1.5 rounded-xl bg-emerald-950 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 text-xs font-bold transition-all flex items-center gap-1.5 disabled:opacity-50"
+                        title="Restore Database from this Snapshot"
+                      >
+                        {snapshotRestoringId === snap.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <RotateCcw className="w-3.5 h-3.5" />
+                        )}
+                        <span>Restore</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteSnapshot(snap.id)}
+                        className="p-1.5 rounded-xl text-rose-400 hover:bg-rose-950/50 border border-rose-900/40 transition-colors"
+                        title="Delete Snapshot"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+
+      {/* PAGE 6: SYSTEM & POWER CONTROLS */}
+      {activeTab === 'system' && (
+        <div className="animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-6">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-2xl bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                <Server className="w-6 h-6" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="font-extrabold text-base text-white">System Power Controls & Management</h3>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase bg-amber-950 text-amber-300 border border-amber-800">
+                    Administrator
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400">
+                  Manage the server runtime instance, restart service processes, power off system, or execute factory resets.
+                </p>
+              </div>
+            </div>
+
+            {(!currentUser || currentUser.role === 'admin') ? (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
+                {/* RESTART SYSTEM BUTTON */}
+                <button
+                  onClick={() => {
+                    setResetPassword('');
+                    setResetError('');
+                    setActionTarget('restart');
+                    setResetStep('password');
+                  }}
+                  className="p-4 rounded-2xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-amber-500/50 text-left transition-all group flex flex-col justify-between space-y-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="p-2 rounded-xl bg-amber-500/10 text-amber-400 group-hover:bg-amber-500 group-hover:text-slate-950 transition-colors">
+                      <RotateCcw className="w-5 h-5" />
+                    </div>
+                    <span className="text-[10px] font-mono font-bold text-slate-500 group-hover:text-amber-400">SOFT REBOOT</span>
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-xs text-white group-hover:text-amber-300">System Restart</h4>
+                    <p className="text-[11px] text-slate-400 mt-0.5">Reboots the Express backend runtime service.</p>
+                  </div>
+                </button>
+
+                {/* POWER OFF BUTTON */}
+                <button
+                  onClick={() => {
+                    setResetPassword('');
+                    setResetError('');
+                    setActionTarget('poweroff');
+                    setResetStep('password');
+                  }}
+                  className="p-4 rounded-2xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-rose-500/50 text-left transition-all group flex flex-col justify-between space-y-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="p-2 rounded-xl bg-rose-500/10 text-rose-400 group-hover:bg-rose-500 group-hover:text-slate-950 transition-colors">
+                      <Power className="w-5 h-5" />
+                    </div>
+                    <span className="text-[10px] font-mono font-bold text-slate-500 group-hover:text-rose-400">SHUTDOWN</span>
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-xs text-white group-hover:text-rose-300">System Power Off</h4>
+                    <p className="text-[11px] text-slate-400 mt-0.5">Safely shuts down the Blu-Vault service process.</p>
+                  </div>
+                </button>
+
+                {/* FACTORY RESET BUTTON */}
+                <button
+                  onClick={() => {
+                    setResetPassword('');
+                    setResetError('');
+                    setActionTarget('reset');
+                    setResetStep('password');
+                  }}
+                  className="p-4 rounded-2xl bg-rose-950/40 hover:bg-rose-900/40 border border-rose-900/60 hover:border-rose-500/80 text-left transition-all group flex flex-col justify-between space-y-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="p-2 rounded-xl bg-rose-600/20 text-rose-400 group-hover:bg-rose-600 group-hover:text-white transition-colors">
+                      <AlertTriangle className="w-5 h-5" />
+                    </div>
+                    <span className="text-[10px] font-mono font-bold text-rose-400/80">WIPE DB</span>
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-xs text-rose-200 group-hover:text-white">Factory Reset System</h4>
+                    <p className="text-[11px] text-rose-300/70 mt-0.5">Clears database and returns to OOBE setup.</p>
+                  </div>
+                </button>
+              </div>
+            ) : (
+              <div className="p-3 bg-slate-950/60 border border-slate-800 rounded-xl text-xs text-slate-400">
+                ⚠️ Only Administrator accounts have authorization to execute system power management or factory resets.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* STEP 1: PASSWORD CONFIRMATION MODAL */}
       {resetStep === 'password' && (
@@ -814,3 +1332,4 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, o
     </div>
   );
 };
+

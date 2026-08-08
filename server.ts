@@ -230,6 +230,10 @@ app.post('/api/auth/login', (req, res) => {
     return res.status(401).json({ success: false, message: 'Invalid username or password.' });
   }
 
+  if (user.disabled) {
+    return res.status(403).json({ success: false, message: 'This account has been disabled by an administrator.' });
+  }
+
   if (user.passwordHash) {
     if (!password || hashPassword(password) !== user.passwordHash) {
       return res.status(401).json({ success: false, message: 'Invalid username or password.' });
@@ -260,7 +264,7 @@ app.get('/api/users', (req, res) => {
 });
 
 app.post('/api/users', (req, res) => {
-  const { username, password, role, permissions, avatar, pin } = req.body;
+  const { username, password, role, permissions, avatar, pin, disabled } = req.body;
   if (!username || !username.trim()) {
     return res.status(400).json({ success: false, message: 'Username is required' });
   }
@@ -281,6 +285,7 @@ app.post('/api/users', (req, res) => {
     permissions: userPermissions,
     avatar: avatar || '👤',
     pin: pin || undefined,
+    disabled: Boolean(disabled),
     createdAt: new Date().toISOString()
   };
 
@@ -292,7 +297,7 @@ app.post('/api/users', (req, res) => {
 
 app.put('/api/users/:id', (req, res) => {
   const { id } = req.params;
-  const { username, password, role, permissions, avatar, pin } = req.body;
+  const { username, password, role, permissions, avatar, pin, disabled } = req.body;
 
   const db = getDatabase();
   const userIndex = db.users.findIndex(u => u.id === id);
@@ -307,6 +312,7 @@ app.put('/api/users/:id', (req, res) => {
   if (role) user.role = role;
   if (avatar) user.avatar = avatar;
   if (pin !== undefined) user.pin = pin || undefined;
+  if (disabled !== undefined) user.disabled = Boolean(disabled);
   if (permissions) user.permissions = permissions;
   if (password && password.trim()) user.passwordHash = hashPassword(password.trim());
 
@@ -318,23 +324,36 @@ app.put('/api/users/:id', (req, res) => {
 
 app.delete('/api/users/:id', (req, res) => {
   const { id } = req.params;
-  const db = getDatabase();
+  const adminPassword = req.body?.adminPassword || req.query?.adminPassword;
 
-  const admins = db.users.filter(u => u.role === 'admin');
+  const db = getDatabase();
   const targetUser = db.users.find(u => u.id === id);
 
   if (!targetUser) {
     return res.status(404).json({ success: false, message: 'User not found' });
   }
 
-  if (targetUser.role === 'admin' && admins.length <= 1) {
-    return res.status(400).json({ success: false, message: 'Cannot delete the sole Administrator account' });
+  // Admin user can NEVER be deleted
+  if (targetUser.role === 'admin') {
+    return res.status(400).json({ success: false, message: 'Administrator accounts cannot be deleted.' });
+  }
+
+  // Validate Admin Password
+  if (!adminPassword || typeof adminPassword !== 'string' || !adminPassword.trim()) {
+    return res.status(401).json({ success: false, message: 'Admin password is required to delete a user account.' });
+  }
+
+  const hashedInput = hashPassword(adminPassword.trim());
+  const isValidAdminPass = db.users.some(u => u.role === 'admin' && u.passwordHash === hashedInput);
+
+  if (!isValidAdminPass) {
+    return res.status(401).json({ success: false, message: 'Incorrect Admin Password. Deletion unauthorized.' });
   }
 
   db.users = db.users.filter(u => u.id !== id);
   saveDatabase(db);
 
-  res.json({ success: true, message: 'User deleted successfully' });
+  res.json({ success: true, message: `User account '${targetUser.username}' deleted successfully.` });
 });
 
 // Media Collection endpoints
@@ -827,11 +846,11 @@ app.get('/api/tmdb/details', async (req, res) => {
           : [];
 
         const formattedSeasons = (data.seasons || [])
-          .filter((s: any) => s.season_number > 0)
+          .filter((s: any) => s.season_number >= 0 && (s.episode_count > 0 || s.season_number > 0))
           .map((s: any) => ({
             id: s.id,
             seasonNumber: s.season_number,
-            name: s.name || `Season ${s.season_number}`,
+            name: s.name || (s.season_number === 0 ? 'Specials & Christmas Specials' : `Season ${s.season_number}`),
             overview: s.overview || '',
             posterUrl: s.poster_path ? `https://image.tmdb.org/t/p/w500${s.poster_path}` : undefined,
             airDate: s.air_date || '',
@@ -920,22 +939,10 @@ async function fetchAllTMDBEpisodesForShow(tvId: number, apiKey: string): Promis
       });
     }
 
-    // Always fetch Season 1
-    const s1Url = `https://api.themoviedb.org/3/tv/${tvId}/season/1?api_key=${apiKey}`;
-    const s1Res = await fetch(s1Url);
-    const s1Data = await s1Res.json();
-
-    if (s1Data.episodes && Array.isArray(s1Data.episodes)) {
-      result.allEpisodes.push(...s1Data.episodes);
-      if (s1Data.poster_path) {
-        result.seasonPosters[1] = `https://image.tmdb.org/t/p/w500${s1Data.poster_path}`;
-      }
-    }
-
-    // Fetch other seasons if present
-    if (showData.seasons && showData.seasons.length > 1) {
+    // Fetch all seasons present in showData (including Season 0 Specials and Seasons 1+)
+    if (showData.seasons && Array.isArray(showData.seasons)) {
       for (const s of showData.seasons) {
-        if (s.season_number > 1) {
+        if (s.season_number >= 0 && (s.episode_count > 0 || s.season_number > 0)) {
           try {
             const sUrl = `https://api.themoviedb.org/3/tv/${tvId}/season/${s.season_number}?api_key=${apiKey}`;
             const sRes = await fetch(sUrl);
@@ -967,7 +974,7 @@ async function fetchAllTMDBEpisodesForShow(tvId: number, apiKey: string): Promis
 // TMDB Season & Episode fetch endpoint
 app.get('/api/tmdb/season', async (req, res) => {
   const tvId = req.query.tvId;
-  const seasonNumber = Number(req.query.seasonNumber || 1);
+  const seasonNumber = req.query.seasonNumber !== undefined ? Number(req.query.seasonNumber) : 1;
 
   if (!tvId) {
     return res.status(400).json({ success: false, message: 'tvId is required' });
@@ -1324,17 +1331,170 @@ Return a structured JSON list of seasons. For each season provide: seasonNumber 
   });
 });
 
+
+
+// Helper function to identify barcodes using Gemini 3.6 Flash
+async function identifyBarcodeWithGemini(barcodeCode: string): Promise<{
+  title: string;
+  type: 'movie' | 'tv' | 'game';
+  format: string;
+  year: number;
+  overview: string;
+  suggestedGenres: string[];
+} | null> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+
+  const maxRetries = 3;
+  let lastError: any = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+      });
+
+      const prompt = `You are a world-class physical media (DVD, Blu-ray, 4K UHD, Steelbook, Box Set, Video Game) barcode identification engine.
+Given barcode UPC/EAN code: "${barcodeCode}".
+
+Identify the exact physical media item or release title corresponding to this barcode number.
+Return ONLY a valid JSON object with the following fields:
+- "title": exact clean title of the movie, TV show, or video game
+- "type": "movie" or "tv" or "game"
+- "format": estimated physical format, e.g. "4K Ultra-HD", "Blu-Ray 1080p", "DVD", "Steelbook", "Box Set", "PlayStation 5", "Nintendo Switch", etc.
+- "releaseYear": number (year of release or season year)
+- "overview": 1-2 sentence synopsis or description
+- "suggestedGenres": array of genre strings, e.g. ["Action", "Sci-Fi"]
+
+If you cannot determine the title with reasonable confidence, set "title" to "".`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.6-flash',
+        contents: prompt
+      });
+
+      const text = response.text || '';
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (parsed.title && typeof parsed.title === 'string' && parsed.title.trim().length > 0) {
+          return {
+            title: parsed.title.trim(),
+            type: (parsed.type === 'tv' || parsed.type === 'game') ? parsed.type : 'movie',
+            format: parsed.format || '4K Ultra-HD',
+            year: typeof parsed.releaseYear === 'number' ? parsed.releaseYear : 2023,
+            overview: parsed.overview || `Identified via Gemini AI for barcode #${barcodeCode}`,
+            suggestedGenres: Array.isArray(parsed.suggestedGenres) ? parsed.suggestedGenres : ['Physical Media']
+          };
+        }
+      }
+      break; // Success or no title found, don't keep retrying if request completed successfully
+    } catch (err: any) {
+      lastError = err;
+      const isTransient = err?.status === 503 || err?.status === 429 || err?.message?.includes('503') || err?.message?.includes('UNAVAILABLE') || err?.message?.includes('high demand');
+      if (isTransient && attempt < maxRetries) {
+        console.warn(`Gemini AI transient error (attempt ${attempt}/${maxRetries}), retrying...`);
+        await new Promise(res => setTimeout(res, attempt * 700));
+      } else {
+        console.warn('Gemini AI barcode identification warning:', err.message || err);
+        break;
+      }
+    }
+  }
+  return null;
+}
+
+// Explicit Gemini AI Barcode Identification Endpoint
+app.post('/api/barcode/identify-ai', async (req, res) => {
+  const { code } = req.body;
+  if (!code || typeof code !== 'string') {
+    return res.status(400).json({ success: false, message: 'Barcode code is required' });
+  }
+
+  const cleanCode = code.replace(/\D/g, '');
+  if (!cleanCode) {
+    return res.status(400).json({ success: false, message: 'Valid numeric barcode required' });
+  }
+
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json({ success: false, message: 'Gemini AI key is not configured on server' });
+  }
+
+  try {
+    const aiResult = await identifyBarcodeWithGemini(cleanCode);
+    if (!aiResult) {
+      return res.json({
+        success: false,
+        message: `Gemini AI could not confidently identify barcode #${cleanCode}`
+      });
+    }
+
+    const db = getDatabase();
+    const tmdbConfig = db.apiConfigs.find(a => a.type === 'tmdb' && a.enabled);
+    const activeTmdbApiKey = tmdbConfig?.apiKey || process.env.TMDB_API_KEY;
+
+    let enrichedPosterUrl = 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=500&auto=format&fit=crop&q=80';
+    let tmdbId: number | undefined = undefined;
+
+    if (activeTmdbApiKey && aiResult.type !== 'game') {
+      try {
+        const searchType = aiResult.type === 'tv' ? 'tv' : 'movie';
+        const tmdbRes = await fetch(`https://api.themoviedb.org/3/search/${searchType}?api_key=${activeTmdbApiKey}&query=${encodeURIComponent(aiResult.title)}`);
+        if (tmdbRes.ok) {
+          const tmdbData = await tmdbRes.json();
+          const firstMatch = tmdbData.results?.[0];
+          if (firstMatch) {
+            tmdbId = firstMatch.id;
+            if (firstMatch.poster_path) {
+              enrichedPosterUrl = `https://image.tmdb.org/t/p/w500${firstMatch.poster_path}`;
+            }
+          }
+        }
+      } catch (e) {
+        // ignore TMDB enrichment errors
+      }
+    }
+
+    return res.json({
+      success: true,
+      source: 'gemini-3.6-flash',
+      result: {
+        barcode: cleanCode,
+        title: aiResult.title,
+        type: aiResult.type,
+        format: aiResult.format,
+        year: aiResult.year,
+        overview: aiResult.overview,
+        suggestedGenres: aiResult.suggestedGenres,
+        posterUrl: enrichedPosterUrl,
+        tmdbId
+      }
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err.message || 'Gemini AI lookup failed' });
+  }
+});
+
 // Barcode Lookup route
 app.get('/api/barcode/lookup', async (req, res) => {
-  const code = (req.query.code as string || '').trim();
-  if (!code) {
+  const rawCode = (req.query.code as string || '').trim();
+  if (!rawCode) {
     return res.status(400).json({ success: false, message: 'Barcode is required' });
   }
+
+  const code = rawCode.replace(/\D/g, ''); // strip non-digits
+  const strippedCode = code.replace(/^0+/, ''); // strip leading zeros for flexible matching
 
   const db = getDatabase();
 
   // Check if item with this barcode already exists in user's vault!
-  const existingInVault = db.media.find(m => m.barcode === code);
+  const existingInVault = db.media.find(m => {
+    if (!m.barcode) return false;
+    const mb = m.barcode.replace(/\D/g, '');
+    return mb === code || mb.replace(/^0+/, '') === strippedCode;
+  });
+
   if (existingInVault) {
     return res.json({
       success: true,
@@ -1433,85 +1593,218 @@ app.get('/api/barcode/lookup', async (req, res) => {
       year: 2023,
       overview: 'Joel and Ellie travel across a post-apocalyptic United States.',
       suggestedGenres: ['Drama', 'Sci-Fi']
+    },
+    '5022366591744': {
+      barcode: '5022366591744',
+      title: 'Dragon Ball GT: The Complete Series',
+      type: 'tv',
+      format: 'DVD',
+      year: 1996,
+      overview: 'Five years after the 28th World Martial Arts Tournament, Goku is turned back into a child by the Black Star Dragon Balls and sets out on a space adventure with Trunks and Pan to retrieve them before Earth is destroyed.',
+      suggestedGenres: ['Anime', 'Action', 'Adventure', 'Fantasy'],
+      posterUrl: 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&auto=format&fit=crop&q=80'
     }
   };
 
-  if (KNOWN_UPCS[code]) {
+  const knownMatch = KNOWN_UPCS[code] || KNOWN_UPCS[strippedCode] || Object.values(KNOWN_UPCS).find((k: any) => k.barcode.replace(/^0+/, '') === strippedCode);
+  if (knownMatch) {
     return res.json({
       success: true,
       foundInVault: false,
-      result: KNOWN_UPCS[code]
+      result: { ...knownMatch, barcode: code || rawCode }
     });
   }
 
+  // Helper to detect physical format and clean title
+  function extractFormatAndCleanTitle(rawTitle: string): { cleanTitle: string; detectedFormat: string } {
+    let detectedFormat = '4K Ultra-HD';
+    const lower = rawTitle.toLowerCase();
+
+    if (lower.includes('steelbook')) {
+      detectedFormat = (lower.includes('4k') || lower.includes('uhd') || lower.includes('ultra hd')) ? 'Steelbook 4K' : 'Steelbook';
+    } else if (lower.includes('4k') || lower.includes('uhd') || lower.includes('ultra hd')) {
+      detectedFormat = '4K Ultra-HD';
+    } else if (lower.includes('blu-ray') || lower.includes('bluray') || lower.includes('bd')) {
+      detectedFormat = 'Blu-Ray 1080p';
+    } else if (lower.includes('dvd')) {
+      detectedFormat = 'DVD';
+    } else if (lower.includes('3d')) {
+      detectedFormat = '3D Blu-Ray';
+    } else if (lower.includes('box set') || lower.includes('complete series') || lower.includes('collection')) {
+      detectedFormat = 'Box Set';
+    }
+
+    const cleanTitle = rawTitle
+      .replace(/\[.*?\]|\(.*?\)/g, '')
+      .replace(/\b(4k|ultra hd|uhd|blu-ray|bluray|dvd|steelbook|collector's edition|collectors edition|limited edition|box set|complete series|special edition|standard edition|region a|region b|region free|2-disc|3-disc|multi-format|digital hd|digital copy|upc|ean)\b/gi, '')
+      .replace(/[-_:]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    return { cleanTitle: cleanTitle || rawTitle, detectedFormat };
+  }
+
   // Attempt public free UPC lookup via UPC Item DB
-  try {
-    const upcRes = await fetch(`https://api.upcitemdb.com/prod/trial/lookup?upc=${code}`);
-    if (upcRes.ok) {
-      const upcData = await upcRes.json();
-      if (upcData?.items?.[0]?.title) {
-        const rawTitle = upcData.items[0].title;
-        // Clean title for TMDB search
-        const cleanTitle = rawTitle
-          .replace(/\[.*?\]|\(.*?\)/g, '')
-          .replace(/4k|ultra hd|uhd|blu-ray|bluray|dvd|steelbook|collector's edition|box set/gi, '')
-          .trim();
+  let foundRawTitle: string | null = null;
+  let foundImage: string | null = null;
+  let foundDescription: string | null = null;
 
-        if (cleanTitle.length > 2) {
-          // Attempt TMDB lookup
-          const tmdbConfig = db.apiConfigs.find(a => a.type === 'tmdb' && a.enabled);
-          const activeTmdbApiKey = tmdbConfig?.apiKey || process.env.TMDB_API_KEY;
-          
-          if (activeTmdbApiKey) {
-            const tmdbSearchRes = await fetch(`https://api.themoviedb.org/3/search/multi?api_key=${activeTmdbApiKey}&query=${encodeURIComponent(cleanTitle)}`);
-            if (tmdbSearchRes.ok) {
-              const tmdbData = await tmdbSearchRes.json();
-              const firstResult = tmdbData.results?.[0];
-              if (firstResult) {
-                const mediaType = firstResult.media_type === 'tv' ? 'tv' : 'movie';
-                const releaseYear = firstResult.release_date || firstResult.first_air_date
-                  ? new Date(firstResult.release_date || firstResult.first_air_date).getFullYear()
-                  : 2023;
+  const targetCodes = Array.from(new Set([code, strippedCode, '0' + strippedCode, '00' + strippedCode])).filter(Boolean);
 
-                return res.json({
-                  success: true,
-                  foundInVault: false,
-                  result: {
-                    barcode: code,
-                    title: firstResult.title || firstResult.name || cleanTitle,
-                    type: mediaType,
-                    format: '4K Ultra-HD',
-                    tmdbId: firstResult.id,
-                    posterUrl: firstResult.poster_path ? `https://image.tmdb.org/t/p/w500${firstResult.poster_path}` : 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=500&auto=format&fit=crop&q=80',
-                    year: releaseYear,
-                    overview: firstResult.overview || upcData.items[0].description || `Scanned Barcode #${code}`,
-                    suggestedGenres: ['Physical Media']
-                  }
-                });
-              }
-            }
+  for (const tc of targetCodes) {
+    if (foundRawTitle) break;
+    try {
+      const upcRes = await fetch(`https://api.upcitemdb.com/prod/trial/lookup?upc=${tc}`, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+        }
+      });
+      if (upcRes.ok) {
+        const upcData = await upcRes.json();
+        if (upcData?.items?.[0]?.title) {
+          foundRawTitle = upcData.items[0].title;
+          foundImage = upcData.items[0].images?.[0] || null;
+          foundDescription = upcData.items[0].description || null;
+          break;
+        }
+      }
+    } catch (err) {
+      console.warn('Free UPC Item DB lookup warning:', err);
+    }
+  }
+
+  // Fallback 2: Google Books / ISBN API if barcode is 10 or 13 digits
+  if (!foundRawTitle && (code.length === 10 || code.length === 13)) {
+    try {
+      const gbooksRes = await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${code}`);
+      if (gbooksRes.ok) {
+        const gbooksData = await gbooksRes.json();
+        const book = gbooksData?.items?.[0]?.volumeInfo;
+        if (book?.title) {
+          foundRawTitle = book.title;
+          foundImage = book.imageLinks?.thumbnail || book.imageLinks?.smallThumbnail || null;
+          foundDescription = book.description || null;
+        }
+      }
+    } catch (err) {
+      console.warn('Google Books ISBN lookup warning:', err);
+    }
+  }
+
+  // Fallback 3: Public Mirror Site / Search HTML Scraping
+  if (!foundRawTitle) {
+    for (const tc of targetCodes) {
+      if (foundRawTitle) break;
+      try {
+        const mirrorRes = await fetch(`https://barcode-list.com/barcode/${tc}`, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+        });
+        if (mirrorRes.ok) {
+          const html = await mirrorRes.text();
+          const titleMatch = html.match(/<title>(.*?)<\/title>/i) || html.match(/<h1[^>]*>(.*?)<\/h1>/i);
+          if (titleMatch && titleMatch[1] && !titleMatch[1].toLowerCase().includes('not found')) {
+            foundRawTitle = titleMatch[1].replace(/-\s*Barcode\s*List/i, '').trim();
           }
         }
-
-        // Return upc item db title if TMDB search didn't find exact match
-        return res.json({
-          success: true,
-          foundInVault: false,
-          result: {
-            barcode: code,
-            title: cleanTitle || rawTitle,
-            type: 'movie',
-            format: '4K Ultra-HD',
-            posterUrl: upcData.items[0].images?.[0] || 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=500&auto=format&fit=crop&q=80',
-            year: 2023,
-            overview: upcData.items[0].description || `Scanned Barcode #${code}`,
-            suggestedGenres: [upcData.items[0].brand || 'Physical Media']
-          }
-        });
+      } catch (err) {
+        console.warn('Barcode mirror scrape warning:', err);
       }
     }
-  } catch (err) {
-    console.warn('Free UPC lookup warning:', err);
+  }
+
+  // Fallback 4: Gemini AI Barcode Identification Engine
+  if (!foundRawTitle && process.env.GEMINI_API_KEY) {
+    try {
+      const aiResult = await identifyBarcodeWithGemini(code);
+      if (aiResult?.title) {
+        foundRawTitle = aiResult.title;
+      }
+    } catch (err) {
+      console.warn('Gemini AI barcode fallback warning:', err);
+    }
+  }
+
+  if (!foundRawTitle) {
+    try {
+      // 2. Try DuckDuckGo HTML public web search extraction
+      const ddgRes = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(code + ' UPC DVD Blu-ray')}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      });
+      if (ddgRes.ok) {
+        const html = await ddgRes.text();
+        // Look for search result titles or link text matching media titles
+        const resultTitles = [...html.matchAll(/<a class="result__url"[^>]*>(.*?)<\/a>|<a class="result__snippet"[^>]*>(.*?)<\/a>/gi)];
+        for (const match of resultTitles) {
+          const text = (match[1] || match[2] || '').replace(/<[^>]+>/g, '').trim();
+          if (text && text.length > 5 && !text.includes('duckduckgo.com')) {
+            foundRawTitle = text;
+            break;
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('DDG search scrape warning:', err);
+    }
+  }
+
+  // If a raw title was found via any free web method, process and match with TMDB!
+  if (foundRawTitle) {
+    const { cleanTitle, detectedFormat } = extractFormatAndCleanTitle(foundRawTitle);
+
+    if (cleanTitle.length > 1) {
+      const tmdbConfig = db.apiConfigs.find(a => a.type === 'tmdb' && a.enabled);
+      const activeTmdbApiKey = tmdbConfig?.apiKey || process.env.TMDB_API_KEY;
+
+      if (activeTmdbApiKey) {
+        try {
+          const tmdbSearchRes = await fetch(`https://api.themoviedb.org/3/search/multi?api_key=${activeTmdbApiKey}&query=${encodeURIComponent(cleanTitle)}`);
+          if (tmdbSearchRes.ok) {
+            const tmdbData = await tmdbSearchRes.json();
+            const firstResult = tmdbData.results?.[0];
+            if (firstResult) {
+              const mediaType = firstResult.media_type === 'tv' ? 'tv' : 'movie';
+              const releaseYear = firstResult.release_date || firstResult.first_air_date
+                ? new Date(firstResult.release_date || firstResult.first_air_date).getFullYear()
+                : 2023;
+
+              return res.json({
+                success: true,
+                foundInVault: false,
+                result: {
+                  barcode: code,
+                  title: firstResult.title || firstResult.name || cleanTitle,
+                  type: mediaType,
+                  format: detectedFormat,
+                  tmdbId: firstResult.id,
+                  posterUrl: firstResult.poster_path ? `https://image.tmdb.org/t/p/w500${firstResult.poster_path}` : (foundImage || 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=500&auto=format&fit=crop&q=80'),
+                  year: releaseYear,
+                  overview: firstResult.overview || foundDescription || `Scanned Barcode #${code}`,
+                  suggestedGenres: ['Physical Media']
+                }
+              });
+            }
+          }
+        } catch (tmdbErr) {
+          console.warn('TMDB search error during barcode lookup:', tmdbErr);
+        }
+      }
+
+      // Return scraped result if TMDB key is absent or couldn't match
+      return res.json({
+        success: true,
+        foundInVault: false,
+        result: {
+          barcode: code,
+          title: cleanTitle || foundRawTitle,
+          type: 'movie',
+          format: detectedFormat,
+          posterUrl: foundImage || 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=500&auto=format&fit=crop&q=80',
+          year: 2023,
+          overview: foundDescription || `Scanned Barcode #${code}`,
+          suggestedGenres: ['Physical Media']
+        }
+      });
+    }
   }
 
   // Attempt lookup via user-configured UPC API if enabled
@@ -1596,7 +1889,122 @@ app.post('/api/settings/apis/test', async (req, res) => {
   res.json({ success: true, message: `Connection test endpoint ready for ${type || 'Custom API'}.` });
 });
 
-// Backup & Database Export/Import
+// Backup & Database Export/Import & Automated Backups
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+const AUTO_BACKUP_CONFIG_FILE = path.join(DATA_DIR, 'auto-backup-config.json');
+
+if (!fs.existsSync(BACKUP_DIR)) {
+  fs.mkdirSync(BACKUP_DIR, { recursive: true });
+}
+
+function calculateNextBackupTime(frequency: string) {
+  const now = new Date();
+  if (frequency === 'every_6h') {
+    return new Date(now.getTime() + 6 * 3600 * 1000).toISOString();
+  } else if (frequency === 'every_12h') {
+    return new Date(now.getTime() + 12 * 3600 * 1000).toISOString();
+  } else if (frequency === 'weekly') {
+    return new Date(now.getTime() + 7 * 24 * 3600 * 1000).toISOString();
+  } else {
+    return new Date(now.getTime() + 24 * 3600 * 1000).toISOString();
+  }
+}
+
+function getAutoBackupConfig() {
+  if (fs.existsSync(AUTO_BACKUP_CONFIG_FILE)) {
+    try {
+      return JSON.parse(fs.readFileSync(AUTO_BACKUP_CONFIG_FILE, 'utf-8'));
+    } catch {
+      // ignore
+    }
+  }
+  return {
+    enabled: false,
+    frequency: 'daily',
+    backupTime: '02:00',
+    retentionCount: 10,
+    autoDownload: false,
+    lastBackupAt: undefined,
+    nextBackupAt: calculateNextBackupTime('daily'),
+    backupLocation: '/data/backups/'
+  };
+}
+
+function saveAutoBackupConfig(cfg: any) {
+  fs.writeFileSync(AUTO_BACKUP_CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf-8');
+}
+
+function listBackupSnapshots() {
+  if (!fs.existsSync(BACKUP_DIR)) return [];
+  const files = fs.readdirSync(BACKUP_DIR).filter(f => f.endsWith('.json'));
+  const snapshots = files.map(file => {
+    const filePath = path.join(BACKUP_DIR, file);
+    const stats = fs.statSync(filePath);
+    let mediaCount = 0;
+    let userCount = 0;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      if (Array.isArray(parsed.media)) mediaCount = parsed.media.length;
+      if (Array.isArray(parsed.users)) userCount = parsed.users.length;
+    } catch {
+      // ignore
+    }
+    return {
+      id: file,
+      filename: file,
+      timestamp: stats.mtime.toISOString(),
+      sizeBytes: stats.size,
+      mediaCount,
+      userCount
+    };
+  });
+
+  return snapshots.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+}
+
+function performAutomatedBackup() {
+  const db = getDatabase();
+  const dateStr = new Date().toISOString().replace(/[:.]/g, '-');
+  const filename = `bluvault-auto-backup-${dateStr}.json`;
+  const filePath = path.join(BACKUP_DIR, filename);
+
+  fs.writeFileSync(filePath, JSON.stringify(db, null, 2), 'utf-8');
+
+  // Enforce retention limit
+  const config = getAutoBackupConfig();
+  const snapshots = listBackupSnapshots();
+  if (config.retentionCount > 0 && snapshots.length > config.retentionCount) {
+    const toRemove = snapshots.slice(config.retentionCount);
+    for (const snap of toRemove) {
+      try {
+        fs.unlinkSync(path.join(BACKUP_DIR, snap.filename));
+      } catch {}
+    }
+  }
+
+  // Update config with last and next backup times
+  config.lastBackupAt = new Date().toISOString();
+  config.nextBackupAt = calculateNextBackupTime(config.frequency || 'daily');
+  saveAutoBackupConfig(config);
+
+  return {
+    filename,
+    timestamp: config.lastBackupAt,
+    nextBackupAt: config.nextBackupAt,
+    mediaCount: db.media?.length || 0,
+    userCount: db.users?.length || 0
+  };
+}
+
+// Check on startup if no backup exists, create initial automatic baseline backup
+try {
+  if (listBackupSnapshots().length === 0) {
+    performAutomatedBackup();
+  }
+} catch (e) {
+  console.log('Initial backup setup notice:', e);
+}
+
 app.get('/api/backup/export', (req, res) => {
   const db = getDatabase();
   res.setHeader('Content-Type', 'application/json');
@@ -1618,6 +2026,94 @@ app.post('/api/backup/import', (req, res) => {
   saveDatabase(db);
   res.json({ success: true, message: `Successfully imported ${media.length} media items into Blu-Vault!`, mediaCount: media.length });
 });
+
+// Automated Backup Config API
+app.get('/api/backup/auto-config', (req, res) => {
+  const config = getAutoBackupConfig();
+  const snapshots = listBackupSnapshots();
+  res.json({ success: true, config, snapshots });
+});
+
+app.post('/api/backup/auto-config', (req, res) => {
+  const { enabled, frequency, backupTime, retentionCount, autoDownload } = req.body;
+  const current = getAutoBackupConfig();
+  const updated = {
+    ...current,
+    enabled: typeof enabled === 'boolean' ? enabled : current.enabled,
+    frequency: frequency || current.frequency,
+    backupTime: backupTime || current.backupTime,
+    retentionCount: typeof retentionCount === 'number' ? retentionCount : current.retentionCount,
+    autoDownload: typeof autoDownload === 'boolean' ? autoDownload : current.autoDownload,
+    nextBackupAt: calculateNextBackupTime(frequency || current.frequency)
+  };
+  saveAutoBackupConfig(updated);
+  res.json({ success: true, message: 'Automated backup configuration updated.', config: updated });
+});
+
+app.post('/api/backup/trigger-now', (req, res) => {
+  try {
+    const backupResult = performAutomatedBackup();
+    const snapshots = listBackupSnapshots();
+    const config = getAutoBackupConfig();
+    res.json({
+      success: true,
+      message: `Automated backup snapshot created: ${backupResult.filename}`,
+      backupResult,
+      snapshots,
+      config
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: `Failed to trigger backup: ${err.message}` });
+  }
+});
+
+app.get('/api/backup/snapshots', (req, res) => {
+  const snapshots = listBackupSnapshots();
+  res.json({ success: true, snapshots });
+});
+
+app.get('/api/backup/snapshots/:id/download', (req, res) => {
+  const fileId = req.params.id;
+  const filePath = path.join(BACKUP_DIR, fileId);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ success: false, message: 'Backup snapshot not found.' });
+  }
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename=${fileId}`);
+  res.sendFile(filePath);
+});
+
+app.delete('/api/backup/snapshots/:id', (req, res) => {
+  const fileId = req.params.id;
+  const filePath = path.join(BACKUP_DIR, fileId);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ success: false, message: 'Backup snapshot not found.' });
+  }
+  try {
+    fs.unlinkSync(filePath);
+    const snapshots = listBackupSnapshots();
+    res.json({ success: true, message: 'Backup snapshot removed.', snapshots });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/backup/snapshots/:id/restore', (req, res) => {
+  const fileId = req.params.id;
+  const filePath = path.join(BACKUP_DIR, fileId);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ success: false, message: 'Backup snapshot not found.' });
+  }
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    saveDatabase(parsed);
+    res.json({ success: true, message: `Successfully restored database from snapshot ${fileId}!` });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: `Restore failed: ${err.message}` });
+  }
+});
+
 
 // System Factory Reset (Admin Only)
 app.post('/api/system/reset', (req, res) => {

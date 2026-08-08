@@ -324,7 +324,7 @@ export const EditMediaModal: React.FC<EditMediaModalProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="text-xs font-bold text-slate-300 block mb-1 flex items-center gap-1">
-                <Award className="w-3.5 h-3.5 text-blue-400" /> Special Edition Name
+                <Award className="w-3.5 h-3.5 text-blue-400" /> Edition Name
               </label>
               <input
                 type="text"

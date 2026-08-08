@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { BarChart3, Disc, DollarSign, Clock, MapPin, Sparkles, Film, Tv, Gamepad2, ShieldCheck, Box, Coins, Bookmark } from 'lucide-react';
 import { MediaItem } from '../types';
 import { formatPrice, getSavedCurrencyCode } from '../lib/currency';
+import { isCompleteTvSeries } from '../lib/tvUtils';
 
 interface VaultStatsViewProps {
   mediaItems: MediaItem[];
@@ -32,7 +33,7 @@ export const VaultStatsView: React.FC<VaultStatsViewProps> = ({ mediaItems }) =>
   const countBluRay = ownedItems.filter(m => m.format.includes('Blu-Ray') && !m.format.includes('4K')).length;
   const countDVD = ownedItems.filter(m => m.format === 'DVD').length;
   const countSteelbook = ownedItems.filter(m => m.format.includes('Steelbook')).length;
-  const countBoxSets = ownedItems.filter(m => m.format === 'Box Set').length;
+  const countBoxSets = ownedItems.filter(m => m.format === 'Box Set' || isCompleteTvSeries(m)).length;
   const countAnime = ownedItems.filter(m => m.type === 'anime' || (m.genres && m.genres.some(g => g.toLowerCase() === 'anime'))).length;
   const countGames = ownedItems.filter(m => m.type === 'game').length;
 

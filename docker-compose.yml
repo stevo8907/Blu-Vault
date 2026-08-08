@@ -12,8 +12,6 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
-      # Optional: Provide your TMDB API Key if not configured in the web UI
-      # - TMDB_API_KEY=your_tmdb_api_key_here
     volumes:
       - blu_vault_data:/app/data
 

@@ -16,6 +16,7 @@ import {
   Tv, 
   Gamepad2, 
   Layers, 
+  Box,
   Loader2,
   Barcode,
   Info,
@@ -33,17 +34,13 @@ interface AddMediaModalProps {
   onClose: () => void;
   currentUser: User | null;
   onMediaAdded: (newItem: MediaItem) => void;
-  onOpenBarcodeScanner: () => void;
-  prefilledBarcodeData?: any;
 }
 
 export const AddMediaModal: React.FC<AddMediaModalProps> = ({
   isOpen,
   onClose,
   currentUser,
-  onMediaAdded,
-  onOpenBarcodeScanner,
-  prefilledBarcodeData
+  onMediaAdded
 }) => {
   // Step 1: 'search', Step 2: 'review'
   const [step, setStep] = useState<'search' | 'review'>('search');
@@ -68,7 +65,7 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
 
   // Physical specs state for review
   const [format, setFormat] = useState<PhysicalFormat>('4K Ultra-HD');
-  const [edition, setEdition] = useState('Standard Edition');
+  const [edition, setEdition] = useState('');
   const [discsCount, setDiscsCount] = useState<number>(1);
   const [condition, setCondition] = useState<Condition>('Mint');
   
@@ -88,89 +85,6 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
   const [notes, setNotes] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [saveError, setSaveError] = useState('');
-
-  // If prefilled data comes from barcode scan, auto-fetch full TMDB details and autofill all metadata
-  useEffect(() => {
-    const autofillFromBarcode = async () => {
-      if (!prefilledBarcodeData || !prefilledBarcodeData.result) return;
-      const r = prefilledBarcodeData.result;
-      
-      const scannedCode = r.barcode || '';
-      setBarcode(scannedCode);
-
-      // Check if unknown barcode signal or placeholder title
-      if (r.isUnknownBarcode || !r.title || r.title.toLowerCase().startsWith('scanned media disc')) {
-        // Unknown barcode scanned! Open TMDB search step with barcode attached so user can pick title
-        setStep('search');
-        return;
-      }
-
-      setIsSearching(true);
-      let details: any = null;
-
-      try {
-        if (r.tmdbId) {
-          details = await getTMDBDetails(r.tmdbId, r.type === 'tv' ? 'tv' : 'movie');
-        } else if (r.title) {
-          const searchRes = await searchTMDB(r.title, r.type === 'tv' ? 'tv' : 'movie');
-          if (searchRes.results && searchRes.results.length > 0) {
-            const topMatch = searchRes.results[0];
-            if (topMatch.id) {
-              details = await getTMDBDetails(topMatch.id, topMatch.media_type === 'tv' ? 'tv' : 'movie');
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('Barcode TMDB auto-fill fetch warning:', err);
-      } finally {
-        setIsSearching(false);
-      }
-
-      const isTv = (details?.type || r.type) === 'tv';
-      const numSeasons = details?.numberOfSeasons || (details?.seasons ? details.seasons.length : 1);
-      const allSeasonsNums = Array.from({ length: numSeasons }, (_, i) => i + 1);
-
-      setSelectedResult({
-        ...r,
-        ...details,
-        id: details?.id || r.tmdbId,
-        media_type: isTv ? 'tv' : (r.type || 'movie'),
-        title: details?.title || r.title,
-        originalTitle: details?.originalTitle || r.title,
-        overview: details?.overview || r.overview || 'Scanned barcode physical media item.',
-        poster_path: details?.posterUrl || r.posterUrl,
-        posterUrl: details?.posterUrl || r.posterUrl,
-        backdrop_path: details?.backdropUrl || r.backdropUrl,
-        backdropUrl: details?.backdropUrl || r.backdropUrl,
-        release_date: details?.releaseYear ? `${details.releaseYear}-01-01` : (r.year ? `${r.year}-01-01` : '2023-01-01'),
-        releaseYear: details?.releaseYear || r.year || 2023,
-        director: details?.director || '',
-        cast: details?.cast || [],
-        genres: details?.genres || r.suggestedGenres || ['Action'],
-        studio: details?.studio || '',
-        rating: details?.rating || 8.0,
-        runtimeMinutes: details?.runtimeMinutes,
-        numberOfSeasons: isTv ? numSeasons : undefined,
-        seasons: isTv ? (details?.seasons || []) : []
-      });
-
-      if (isTv) {
-        setFormat(r.format || '4K Ultra-HD');
-        setEdition('Complete Series Box Set');
-        setDiscsCount(numSeasons * 3);
-        setTvCollectionType('complete');
-        setSelectedSeasonsList(allSeasonsNums);
-      } else {
-        setFormat(r.format || '4K Ultra-HD');
-        setEdition(r.edition || 'Standard Edition');
-        setDiscsCount(1);
-      }
-
-      setStep('review');
-    };
-
-    autofillFromBarcode();
-  }, [prefilledBarcodeData]);
 
   if (!isOpen) return null;
 
@@ -210,8 +124,11 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
       }
 
       const isTv = res.media_type === 'tv' || activeTab === 'tv';
-      const numSeasons = details?.numberOfSeasons || (details?.seasons ? details.seasons.length : 1);
-      const allSeasonsNums = Array.from({ length: numSeasons }, (_, i) => i + 1);
+      const seasonsList = details?.seasons && details.seasons.length > 0
+        ? details.seasons
+        : Array.from({ length: details?.numberOfSeasons || 1 }, (_, i) => ({ seasonNumber: i + 1, name: `Season ${i + 1}` }));
+      const allSeasonsNums = seasonsList.map((s: any) => s.seasonNumber);
+      const numSeasons = seasonsList.length;
 
       setSelectedResult({
         ...res,
@@ -230,7 +147,7 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
       // Default TV state
       if (isTv) {
         setFormat('4K Ultra-HD');
-        setEdition('Complete Series Box Set');
+        setEdition('');
         setDiscsCount(numSeasons * 3);
         setTvCollectionType('complete');
         setSelectedSeasonsList(allSeasonsNums);
@@ -250,7 +167,7 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
         }
       } else {
         setFormat('4K Ultra-HD');
-        setEdition('Standard Edition');
+        setEdition('');
         setDiscsCount(1);
         setExistingTvMatch(null);
       }
@@ -365,13 +282,26 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
 
       let finalSeasons: Season[] = [];
       if (isTv) {
-        if (tvCollectionType === 'complete') {
+        const isAllSelected = selectedSeasonsList.length === allSeasons.length;
+        if (tvCollectionType === 'complete' && isAllSelected) {
           finalSeasons = allSeasons.map((s: any) => ({ ...s, ownedInVault: true }));
         } else {
-          finalSeasons = allSeasons.map((s: any) => ({
-            ...s,
-            ownedInVault: selectedSeasonsList.includes(s.seasonNumber)
-          }));
+          finalSeasons = allSeasons
+            .filter((s: any) => selectedSeasonsList.includes(s.seasonNumber))
+            .map((s: any) => ({
+              ...s,
+              ownedInVault: true,
+              format,
+              edition: edition || `Season ${s.seasonNumber}`,
+              shelfLocation: shelfLocation || 'Vault Shelf A1',
+              purchasePrice: purchasePrice ? parseFloat(purchasePrice) : undefined,
+              purchaseRetailer: purchaseRetailer || undefined,
+              purchaseDate: purchaseDate || undefined,
+              discsCount: Number(discsCount) || 1,
+              condition: condition || 'Mint',
+              barcode: barcode || undefined,
+              notes: notes || undefined
+            }));
         }
       }
 
@@ -397,7 +327,7 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
         numberOfSeasons: isTv ? finalSeasons.length : undefined,
         numberOfEpisodes: selectedResult.numberOfEpisodes || undefined,
         seasons: isTv ? finalSeasons : undefined,
-        isCompleteSeries: isTv && tvCollectionType === 'complete',
+        isCompleteSeries: isTv && tvCollectionType === 'complete' && selectedSeasonsList.length === allSeasons.length,
         director: selectedResult.director || undefined,
         cast: selectedResult.cast || [],
         studio: selectedResult.studio || undefined,
@@ -468,7 +398,7 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
                 {step === 'search' ? 'Add Media to Collection' : 'Review & Physical Copy Specs'}
               </h2>
               <p className="text-xs text-slate-400 font-mono">
-                {step === 'search' ? 'Search TMDB Database or Scan Disc Barcode' : 'Verify metadata and set shelf location, format & specs'}
+                {step === 'search' ? 'Search TMDB Database by title, director, or franchise' : 'Verify metadata and set shelf location, format & specs'}
               </p>
             </div>
           </div>
@@ -481,17 +411,6 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
           </button>
         </div>
 
-        {/* Duplicate Disc / Save Error Notifications */}
-        {prefilledBarcodeData?.foundInVault && prefilledBarcodeData?.item && (
-          <div className="mx-6 mt-4 p-3.5 rounded-2xl bg-amber-950/80 border border-amber-600/60 text-xs text-amber-200 flex items-start gap-3 animate-fade-in shadow-lg">
-            <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-            <div>
-              <span className="font-extrabold text-white text-sm block">Notice: Duplicate Disc Detected in Library</span>
-              <span className="font-semibold text-amber-300">"{prefilledBarcodeData.item.title}" ({prefilledBarcodeData.item.format})</span> is ALREADY in your Blu-Vault collection located at <span className="font-mono text-cyan-300">{prefilledBarcodeData.item.shelfLocation}</span>. You can still add this copy to your vault (e.g. second edition/steelbook).
-            </div>
-          </div>
-        )}
-
         {saveError && (
           <div className="mx-6 mt-4 p-3.5 rounded-2xl bg-rose-950/80 border border-rose-800 text-xs text-rose-200 flex items-center gap-3 animate-fade-in">
             <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" />
@@ -499,75 +418,9 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
           </div>
         )}
 
-        {/* STEP 1: TMDB SEARCH & BARCODE SCANNER ENTRY */}
+        {/* STEP 1: TMDB SEARCH ENTRY */}
         {step === 'search' && (
           <div className="p-6 sm:p-8 overflow-y-auto space-y-6 custom-scrollbar flex-1">
-            
-            {/* Barcode Scanner Callout or Active Barcode Notification */}
-            {barcode ? (
-              <div className="p-4 rounded-2xl bg-gradient-to-r from-cyan-950/90 via-blue-950/80 to-slate-950 border border-cyan-500/50 text-xs text-cyan-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xl animate-fade-in">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 rounded-xl bg-cyan-500/20 text-cyan-400 shrink-0 border border-cyan-500/30">
-                    <Barcode className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <p className="font-bold text-white text-sm flex items-center gap-2">
-                      Scanned Barcode: <span className="font-mono text-cyan-300">#{barcode}</span>
-                    </p>
-                    <p className="text-xs text-cyan-200/80">
-                      Search TMDB below to auto-fill poster & metadata for this disc, or re-scan a different barcode.
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
-                  <button
-                    type="button"
-                    onClick={onOpenBarcodeScanner}
-                    className="px-3 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold text-xs flex items-center gap-1.5 transition-colors shadow-md"
-                  >
-                    <Scan className="w-3.5 h-3.5" />
-                    <span>Scan New</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedResult({
-                        title: `Scanned Disc #${barcode}`,
-                        overview: 'Scanned barcode physical media item.',
-                        poster_path: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=500&auto=format&fit=crop&q=80',
-                        release_date: '2023-01-01',
-                        vote_average: 8.0,
-                        genres: ['Collector Edition']
-                      });
-                      setStep('review');
-                    }}
-                    className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition-colors"
-                  >
-                    Manual Specs →
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="bg-gradient-to-r from-cyan-950/70 via-blue-950/50 to-slate-900 border border-cyan-800/50 p-4 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-lg">
-                <div className="flex items-center gap-3">
-                  <div className="p-3 rounded-xl bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 shrink-0">
-                    <Scan className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-sm text-cyan-200">Have a Physical DVD, Blu-Ray, or Game Box?</h3>
-                    <p className="text-xs text-slate-400">Scan the barcode directly using your device camera or barcode reader</p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={onOpenBarcodeScanner}
-                  className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-cyan-600/20 transition-all shrink-0"
-                >
-                  <Barcode className="w-4 h-4" />
-                  <span>Open Barcode Scanner</span>
-                </button>
-              </div>
-            )}
 
             {/* TMDB Search Input & Category Tabs */}
             <form onSubmit={handleSearch} className="space-y-3">
@@ -848,6 +701,54 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
                     </div>
                   )}
 
+                  {/* Release Set Type Selector */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-indigo-300 uppercase tracking-wider block">
+                      Release Set Type:
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div
+                        onClick={() => {
+                          setTvCollectionType('complete');
+                          const seasonsToUse = selectedResult.seasons && selectedResult.seasons.length > 0
+                            ? selectedResult.seasons
+                            : Array.from({ length: selectedResult.numberOfSeasons || 1 }, (_, i) => ({ seasonNumber: i + 1 }));
+                          const allS = seasonsToUse.map((s: any) => s.seasonNumber);
+                          setSelectedSeasonsList(allS);
+                          setFormat('Box Set');
+                        }}
+                        className={`p-3 rounded-xl border flex items-center gap-3 cursor-pointer transition-all ${
+                          tvCollectionType === 'complete'
+                            ? 'bg-amber-500/20 border-amber-400/80 text-amber-200 ring-1 ring-amber-400/50'
+                            : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:border-slate-700 hover:bg-slate-900'
+                        }`}
+                      >
+                        <Box className={`w-5 h-5 shrink-0 ${tvCollectionType === 'complete' ? 'text-amber-400' : 'text-slate-500'}`} />
+                        <div>
+                          <span className="text-xs font-bold block text-white">Complete Series / Box Set</span>
+                          <span className="text-[10px] text-slate-400 block">Full series set — goes inside Complete Box Sets menu</span>
+                        </div>
+                      </div>
+
+                      <div
+                        onClick={() => {
+                          setTvCollectionType('seasons');
+                        }}
+                        className={`p-3 rounded-xl border flex items-center gap-3 cursor-pointer transition-all ${
+                          tvCollectionType === 'seasons'
+                            ? 'bg-indigo-500/20 border-indigo-400/80 text-indigo-200 ring-1 ring-indigo-400/50'
+                            : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:border-slate-700 hover:bg-slate-900'
+                        }`}
+                      >
+                        <Disc className={`w-5 h-5 shrink-0 ${tvCollectionType === 'seasons' ? 'text-indigo-400' : 'text-slate-500'}`} />
+                        <div>
+                          <span className="text-xs font-bold block text-white">Individual / Selected Season(s)</span>
+                          <span className="text-[10px] text-slate-400 block">Single or specific seasons added to collection</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="space-y-2 pt-2 border-t border-indigo-900/50">
                     <div className="flex items-center justify-between text-xs text-slate-300">
                       <span className="font-bold">Included Season(s):</span>
@@ -861,30 +762,46 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
                     </div>
 
                     <div className="flex flex-wrap gap-2">
-                      {Array.from({ length: Math.max(selectedResult.numberOfSeasons || 1, 10) }, (_, i) => i + 1).map(sn => {
-                        const isSelected = selectedSeasonsList.includes(sn);
-                        return (
-                          <button
-                            key={sn}
-                            type="button"
-                            onClick={() => {
-                              if (isSelected) {
-                                setSelectedSeasonsList(prev => prev.filter(s => s !== sn));
-                              } else {
-                                setSelectedSeasonsList(prev => [...prev, sn].sort((a, b) => a - b));
-                              }
-                            }}
-                            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all border flex items-center gap-1.5 ${
-                              isSelected
-                                ? 'bg-cyan-500 text-slate-950 border-cyan-300 shadow-md shadow-cyan-500/20'
-                                : 'bg-slate-900 text-slate-500 border-slate-800 hover:border-slate-700'
-                            }`}
-                          >
-                            <Check className={`w-3.5 h-3.5 ${isSelected ? 'opacity-100' : 'opacity-0'}`} />
-                            <span>Season {sn}</span>
-                          </button>
-                        );
-                      })}
+                      {(() => {
+                        const seasonsToUse = selectedResult.seasons && selectedResult.seasons.length > 0
+                          ? selectedResult.seasons
+                          : Array.from({ length: selectedResult.numberOfSeasons || 1 }, (_, i) => ({ seasonNumber: i + 1, name: `Season ${i + 1}` }));
+                        
+                        return seasonsToUse.map((sData: any) => {
+                          const sn = sData.seasonNumber;
+                          const isSelected = selectedSeasonsList.includes(sn);
+                          const label = sData.name || (sn === 0 ? 'Specials' : `Season ${sn}`);
+
+                          return (
+                            <button
+                              key={sn}
+                              type="button"
+                              onClick={() => {
+                                let next: number[];
+                                if (isSelected) {
+                                  next = selectedSeasonsList.filter(s => s !== sn);
+                                } else {
+                                  next = [...selectedSeasonsList, sn].sort((a, b) => a - b);
+                                }
+                                setSelectedSeasonsList(next);
+                                if (next.length === seasonsToUse.length) {
+                                  setTvCollectionType('complete');
+                                } else {
+                                  setTvCollectionType('seasons');
+                                }
+                              }}
+                              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all border flex items-center gap-1.5 ${
+                                isSelected
+                                  ? 'bg-cyan-500 text-slate-950 border-cyan-300 shadow-md shadow-cyan-500/20'
+                                  : 'bg-slate-900 text-slate-500 border-slate-800 hover:border-slate-700'
+                              }`}
+                            >
+                              <Check className={`w-3.5 h-3.5 ${isSelected ? 'opacity-100' : 'opacity-0'}`} />
+                              <span>{label}</span>
+                            </button>
+                          );
+                        });
+                      })()}
                     </div>
                   </div>
                 </div>
@@ -957,7 +874,6 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
                     <input
                       type="number"
                       min="1"
-                      max="30"
                       value={discsCount}
                       onChange={(e) => setDiscsCount(Number(e.target.value))}
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-white focus:border-blue-500 font-mono"
@@ -1219,7 +1135,9 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
                   <div className="flex items-center gap-2 text-xs text-slate-400 mt-0.5">
                     <span>{selectedResult.release_date ? new Date(selectedResult.release_date).getFullYear() : '2023'}</span>
                     <span>•</span>
-                    <span className="font-bold text-cyan-400">{selectedResult.numberOfSeasons || selectedSeasonsList.length || 1} Total Seasons Available</span>
+                    <span className="font-bold text-cyan-400">
+                      {(selectedResult.seasons && selectedResult.seasons.length > 0 ? selectedResult.seasons.length : (selectedResult.numberOfSeasons || 1))} Total Seasons Available
+                    </span>
                   </div>
                 </div>
               </div>
@@ -1229,15 +1147,16 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    const num = selectedResult.numberOfSeasons || 1;
-                    const all = Array.from({ length: num }, (_, i) => i + 1);
+                    const seasonsToUse = selectedResult.seasons && selectedResult.seasons.length > 0
+                      ? selectedResult.seasons
+                      : Array.from({ length: selectedResult.numberOfSeasons || 1 }, (_, i) => ({ seasonNumber: i + 1 }));
+                    const all = seasonsToUse.map((s: any) => s.seasonNumber);
                     setSelectedSeasonsList(all);
                     setTvCollectionType('complete');
-                    setEdition('Complete Series Box Set');
                   }}
                   className="px-3 py-1.5 rounded-xl bg-indigo-600/90 hover:bg-indigo-500 text-white text-xs font-bold transition-all shadow-md flex items-center gap-1.5"
                 >
-                  <Check className="w-3.5 h-3.5" /> Select All ({selectedResult.numberOfSeasons || 1} Seasons)
+                  <Check className="w-3.5 h-3.5" /> Select All ({(selectedResult.seasons && selectedResult.seasons.length > 0 ? selectedResult.seasons.length : (selectedResult.numberOfSeasons || 1))} Seasons)
                 </button>
 
                 <button
@@ -1256,7 +1175,6 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
                   onClick={() => {
                     setSelectedSeasonsList([1]);
                     setTvCollectionType('seasons');
-                    setEdition('Season 1');
                   }}
                   className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-all"
                 >
@@ -1266,14 +1184,18 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    const num = selectedResult.numberOfSeasons || 1;
-                    setSelectedSeasonsList([num]);
-                    setTvCollectionType('seasons');
-                    setEdition(`Season ${num}`);
+                    const seasonsToUse = selectedResult.seasons && selectedResult.seasons.length > 0
+                      ? selectedResult.seasons
+                      : Array.from({ length: selectedResult.numberOfSeasons || 1 }, (_, i) => ({ seasonNumber: i + 1, name: `Season ${i + 1}` }));
+                    const lastSeason = seasonsToUse[seasonsToUse.length - 1];
+                    if (lastSeason) {
+                      setSelectedSeasonsList([lastSeason.seasonNumber]);
+                      setTvCollectionType('seasons');
+                    }
                   }}
                   className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-all"
                 >
-                  Latest Season ({selectedResult.numberOfSeasons || 1}) Only
+                  Latest Season ({(selectedResult.seasons && selectedResult.seasons.length > 0 ? selectedResult.seasons.length : (selectedResult.numberOfSeasons || 1))}) Only
                 </button>
               </div>
             </div>
@@ -1285,57 +1207,65 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
               </label>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {Array.from({ length: Math.max(selectedResult.numberOfSeasons || 1, 10) }, (_, i) => i + 1).map(sn => {
-                  const isSelected = selectedSeasonsList.includes(sn);
-                  const seasonData = selectedResult.seasons?.find((s: any) => s.seasonNumber === sn);
-                  const epCount = seasonData?.episodeCount || 10;
+                {(() => {
+                  const seasonsToUse = selectedResult.seasons && selectedResult.seasons.length > 0
+                    ? selectedResult.seasons
+                    : Array.from({ length: selectedResult.numberOfSeasons || 1 }, (_, i) => ({ seasonNumber: i + 1, name: `Season ${i + 1}`, episodeCount: 10 }));
 
-                  return (
-                    <div
-                      key={sn}
-                      onClick={() => {
-                        if (isSelected) {
-                          const next = selectedSeasonsList.filter(s => s !== sn);
-                          setSelectedSeasonsList(next);
-                          if (next.length === (selectedResult.numberOfSeasons || 1)) setTvCollectionType('complete');
-                          else setTvCollectionType('seasons');
-                        } else {
-                          const next = [...selectedSeasonsList, sn].sort((a, b) => a - b);
-                          setSelectedSeasonsList(next);
-                          if (next.length === (selectedResult.numberOfSeasons || 1)) setTvCollectionType('complete');
-                          else setTvCollectionType('seasons');
-                        }
-                      }}
-                      className={`p-3.5 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
-                        isSelected
-                          ? 'bg-cyan-950/40 border-cyan-500/80 shadow-md shadow-cyan-950/30'
-                          : 'bg-slate-950/60 border-slate-800 hover:border-slate-700 hover:bg-slate-950'
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className={`w-8 h-8 rounded-xl flex items-center justify-center font-bold text-xs shrink-0 ${
-                          isSelected ? 'bg-cyan-500 text-slate-950 font-black' : 'bg-slate-800 text-slate-400'
+                  return seasonsToUse.map((seasonData: any) => {
+                    const sn = seasonData.seasonNumber;
+                    const isSelected = selectedSeasonsList.includes(sn);
+                    const epCount = seasonData.episodeCount || 10;
+                    const nameLabel = seasonData.name || (sn === 0 ? 'Specials & Christmas Specials' : `Season ${sn}`);
+                    const badgeLabel = sn === 0 ? 'Specials' : `S${sn}`;
+
+                    return (
+                      <div
+                        key={sn}
+                        onClick={() => {
+                          if (isSelected) {
+                            const next = selectedSeasonsList.filter(s => s !== sn);
+                            setSelectedSeasonsList(next);
+                            if (next.length === seasonsToUse.length) setTvCollectionType('complete');
+                            else setTvCollectionType('seasons');
+                          } else {
+                            const next = [...selectedSeasonsList, sn].sort((a, b) => a - b);
+                            setSelectedSeasonsList(next);
+                            if (next.length === seasonsToUse.length) setTvCollectionType('complete');
+                            else setTvCollectionType('seasons');
+                          }
+                        }}
+                        className={`p-3.5 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                          isSelected
+                            ? 'bg-cyan-950/40 border-cyan-500/80 shadow-md shadow-cyan-950/30'
+                            : 'bg-slate-950/60 border-slate-800 hover:border-slate-700 hover:bg-slate-950'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className={`px-2 py-1.5 rounded-xl flex items-center justify-center font-bold text-xs shrink-0 ${
+                            isSelected ? 'bg-cyan-500 text-slate-950 font-black' : 'bg-slate-800 text-slate-400'
+                          }`}>
+                            {badgeLabel}
+                          </div>
+                          <div className="min-w-0">
+                            <h5 className={`text-xs font-extrabold truncate ${isSelected ? 'text-white' : 'text-slate-300'}`}>
+                              {nameLabel}
+                            </h5>
+                            <p className="text-[11px] text-slate-400 font-mono">
+                              ~{epCount} Episodes
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className={`p-1.5 rounded-xl transition-all shrink-0 ${
+                          isSelected ? 'bg-cyan-500 text-slate-950' : 'bg-slate-800 text-slate-500'
                         }`}>
-                          S{sn}
-                        </div>
-                        <div>
-                          <h5 className={`text-xs font-extrabold ${isSelected ? 'text-white' : 'text-slate-300'}`}>
-                            {seasonData?.name || `Season ${sn}`}
-                          </h5>
-                          <p className="text-[11px] text-slate-400 font-mono">
-                            ~{epCount} Episodes
-                          </p>
+                          <Check className="w-4 h-4" />
                         </div>
                       </div>
-
-                      <div className={`p-1.5 rounded-xl transition-all ${
-                        isSelected ? 'bg-cyan-500 text-slate-950' : 'bg-slate-800 text-slate-500'
-                      }`}>
-                        <Check className="w-4 h-4" />
-                      </div>
-                    </div>
-                  );
-                })}
+                    );
+                  });
+                })()}
               </div>
             </div>
 
@@ -1353,13 +1283,8 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
                   const isAll = selectedSeasonsList.length === num;
                   if (isAll) {
                     setTvCollectionType('complete');
-                    setEdition('Complete Series Box Set');
-                  } else if (selectedSeasonsList.length === 1) {
-                    setTvCollectionType('seasons');
-                    setEdition(`Season ${selectedSeasonsList[0]}`);
                   } else {
                     setTvCollectionType('seasons');
-                    setEdition(`Seasons ${selectedSeasonsList.join(', ')} Box Set`);
                   }
                   setDiscsCount(selectedSeasonsList.length * 3);
                   setShowSeasonSelectPopup(false);

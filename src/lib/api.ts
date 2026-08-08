@@ -1,4 +1,4 @@
-import { MediaItem, User, UserPermissions, UserRole, ApiConfig, TMDBSearchResult, BarcodeLookupResult, ViewCategory, Season, Episode } from '../types';
+import { MediaItem, User, UserPermissions, UserRole, ApiConfig, TMDBSearchResult, BarcodeLookupResult, ViewCategory, Season, Episode, AutoBackupConfig, BackupSnapshot } from '../types';
 
 export async function checkAuthStatus(): Promise<{ isOobeRequired: boolean; totalUsers: number }> {
   const res = await fetch('/api/auth/status');
@@ -45,6 +45,7 @@ export async function createUser(userData: {
   permissions?: UserPermissions;
   avatar?: string;
   pin?: string;
+  disabled?: boolean;
 }): Promise<User> {
   const res = await fetch('/api/users', {
     method: 'POST',
@@ -63,6 +64,7 @@ export async function updateUser(id: string, updates: {
   permissions?: UserPermissions;
   avatar?: string;
   pin?: string;
+  disabled?: boolean;
 }): Promise<User> {
   const res = await fetch(`/api/users/${id}`, {
     method: 'PUT',
@@ -74,8 +76,12 @@ export async function updateUser(id: string, updates: {
   return data.user;
 }
 
-export async function deleteUser(id: string): Promise<void> {
-  const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
+export async function deleteUser(id: string, adminPassword?: string): Promise<void> {
+  const res = await fetch(`/api/users/${id}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ adminPassword })
+  });
   const data = await res.json();
   if (!data.success) throw new Error(data.message || 'Failed to delete user');
 }
@@ -179,6 +185,20 @@ export async function lookupBarcode(barcode: string): Promise<{
   message?: string;
 }> {
   const res = await fetch(`/api/barcode/lookup?code=${encodeURIComponent(barcode)}`);
+  return await res.json();
+}
+
+export async function identifyBarcodeWithAI(barcode: string): Promise<{
+  success: boolean;
+  source?: string;
+  result?: BarcodeLookupResult;
+  message?: string;
+}> {
+  const res = await fetch('/api/barcode/identify-ai', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code: barcode })
+  });
   return await res.json();
 }
 
@@ -293,4 +313,50 @@ export async function segmentShowSeasons(title: string, totalEpisodes?: number, 
   if (!data.success) throw new Error(data.message || 'Failed to segment seasons');
   return data;
 }
+
+export async function fetchAutoBackupConfig(): Promise<{ config: AutoBackupConfig; snapshots: BackupSnapshot[] }> {
+  const res = await fetch('/api/backup/auto-config');
+  const data = await res.json();
+  if (!data.success) throw new Error(data.message || 'Failed to fetch auto backup config');
+  return { config: data.config, snapshots: data.snapshots || [] };
+}
+
+export async function saveAutoBackupConfig(config: Partial<AutoBackupConfig>): Promise<AutoBackupConfig> {
+  const res = await fetch('/api/backup/auto-config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config)
+  });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.message || 'Failed to save auto backup settings');
+  return data.config;
+}
+
+export async function triggerAutoBackupNow(): Promise<{ message: string; snapshots: BackupSnapshot[]; config: AutoBackupConfig }> {
+  const res = await fetch('/api/backup/trigger-now', { method: 'POST' });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.message || 'Failed to trigger backup');
+  return { message: data.message, snapshots: data.snapshots, config: data.config };
+}
+
+export async function deleteBackupSnapshot(id: string): Promise<BackupSnapshot[]> {
+  const res = await fetch(`/api/backup/snapshots/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.message || 'Failed to delete snapshot');
+  return data.snapshots;
+}
+
+export async function restoreBackupSnapshot(id: string): Promise<void> {
+  const res = await fetch(`/api/backup/snapshots/${encodeURIComponent(id)}/restore`, { method: 'POST' });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.message || 'Failed to restore snapshot');
+}
+
+export function downloadBackupSnapshot(id: string): void {
+  window.open(`/api/backup/snapshots/${encodeURIComponent(id)}/download`, '_blank');
+}
+
+
+
+
 

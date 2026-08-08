@@ -4,7 +4,6 @@ import { Sidebar } from './components/Sidebar';
 import { MediaCard } from './components/MediaCard';
 import { MediaDetailModal } from './components/MediaDetailModal';
 import { AddMediaModal } from './components/AddMediaModal';
-import { BarcodeScannerModal } from './components/BarcodeScannerModal';
 import { LoanTrackerView } from './components/LoanTrackerView';
 import { VaultStatsView } from './components/VaultStatsView';
 import { ApiSettingsView } from './components/ApiSettingsView';
@@ -18,6 +17,7 @@ import { SeasonCard } from './components/SeasonCard';
 import { MediaItem, User, ViewCategory } from './types';
 import { fetchMedia, fetchUsers, checkAuthStatus, logoutUser, updateLoanStatus, toggleFavorite, deleteMediaItem, updateMediaItem } from './lib/api';
 import { getSavedNavItems } from './lib/navConfig';
+import { isCompleteTvSeries } from './lib/tvUtils';
 import { Disc, Film, Tv, Sparkles, Filter, Plus, Scan, Lock, Layers, ChevronDown, ChevronUp } from 'lucide-react';
 
 export default function App() {
@@ -63,9 +63,7 @@ export default function App() {
   const [selectedSeasonForModal, setSelectedSeasonForModal] = useState<number | undefined>(undefined);
   const [editingMediaItem, setEditingMediaItem] = useState<MediaItem | null>(null);
   const [isAddMediaOpen, setIsAddMediaOpen] = useState(false);
-  const [isBarcodeScannerOpen, setIsBarcodeScannerOpen] = useState(false);
   const [isUserSettingsOpen, setIsUserSettingsOpen] = useState(false);
-  const [prefilledBarcodeData, setPrefilledBarcodeData] = useState<any>(null);
 
   // TV Shows Seasons Collapse / Expand State
   const [expandedShowIds, setExpandedShowIds] = useState<Set<string>>(new Set());
@@ -228,7 +226,7 @@ export default function App() {
         list = list.filter(m => m.type === 'tv' && m.format === 'DVD');
         break;
       case 'tv-boxsets':
-        list = list.filter(m => m.type === 'tv' && m.format === 'Box Set');
+        list = list.filter(m => (m.type === 'tv' || isAnimeTv(m)) && isCompleteTvSeries(m));
         break;
       case 'anime-all':
         list = list.filter(isAnimeItem);
@@ -438,14 +436,8 @@ export default function App() {
     }
   };
 
-  const handleBarcodeScanned = (barcodeData: any) => {
-    setPrefilledBarcodeData(barcodeData);
-    setIsAddMediaOpen(true);
-  };
-
   const handleMediaAdded = (newItem: MediaItem) => {
     setMediaItems(prev => [newItem, ...prev]);
-    setPrefilledBarcodeData(null);
   };
 
   if (screenState === 'OOBE') {
@@ -496,7 +488,6 @@ export default function App() {
           if (activeCategory === 'add-media') return;
           setIsAddMediaOpen(true);
         }}
-        onOpenBarcodeScanner={() => setIsBarcodeScannerOpen(true)}
         onLogout={handleLogout}
         totalMediaCount={mediaItems.length}
         theme={theme}
@@ -519,7 +510,6 @@ export default function App() {
           }}
           currentUser={currentUser}
           itemsCount={itemsCount}
-          onOpenBarcodeScanner={() => setIsBarcodeScannerOpen(true)}
         />
 
         {/* Content Body Area */}
@@ -544,6 +534,11 @@ export default function App() {
           {activeCategory === 'api-settings' && (
             <ApiSettingsView
               currentUser={currentUser}
+              users={users}
+              onRefreshUsers={async () => {
+                const u = await fetchUsers();
+                setUsers(u);
+              }}
               onMediaImported={handleRefreshMedia}
               onSystemReset={() => {
                 localStorage.clear();
@@ -808,23 +803,9 @@ export default function App() {
       {isAddMediaOpen && (
         <AddMediaModal
           isOpen={isAddMediaOpen}
-          onClose={() => {
-            setIsAddMediaOpen(false);
-            setPrefilledBarcodeData(null);
-          }}
+          onClose={() => setIsAddMediaOpen(false)}
           currentUser={currentUser}
           onMediaAdded={handleMediaAdded}
-          onOpenBarcodeScanner={() => setIsBarcodeScannerOpen(true)}
-          prefilledBarcodeData={prefilledBarcodeData}
-        />
-      )}
-
-      {/* BARCODE SCANNER MODAL */}
-      {isBarcodeScannerOpen && (
-        <BarcodeScannerModal
-          isOpen={isBarcodeScannerOpen}
-          onClose={() => setIsBarcodeScannerOpen(false)}
-          onBarcodeScanned={handleBarcodeScanned}
         />
       )}
 

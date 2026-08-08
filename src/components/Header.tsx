@@ -25,7 +25,7 @@ interface HeaderProps {
   currentUser: User | null;
   onOpenUserSettings?: () => void;
   onOpenAddMedia: () => void;
-  onOpenBarcodeScanner: () => void;
+  onOpenBarcodeScanner?: () => void;
   onLogout?: () => void;
   totalMediaCount: number;
   theme?: 'dark' | 'light';
@@ -110,17 +110,6 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* Right side: Action Buttons & Dropdown User Window */}
       <div className="flex items-center gap-2">
-        {/* Barcode Scanner Quick Button */}
-        <button
-          onClick={onOpenBarcodeScanner}
-          className="flex items-center gap-1.5 px-2.5 sm:px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-cyan-300 border border-cyan-800/50 text-xs font-semibold transition-all shadow-sm active:scale-95 shrink-0"
-          title="Scan Physical DVD/Blu-Ray Barcode"
-        >
-          <Scan className="w-4 h-4 text-cyan-400" />
-          <span className="hidden sm:inline">Scan Barcode</span>
-          <span className="sm:hidden text-[10px] uppercase font-mono font-bold text-cyan-400">Scan</span>
-        </button>
-
         {/* Add Media Button */}
         {(!currentUser?.permissions || currentUser.permissions.canAddMedia) && (
           <button

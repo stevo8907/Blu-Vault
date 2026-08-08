@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { formatPrice } from '../lib/currency';
+import { isCompleteTvSeries } from '../lib/tvUtils';
 import { TvShowLoanModal } from './TvShowLoanModal';
 import { 
   X, 
@@ -35,9 +36,22 @@ import {
   Wand2,
   Image as ImageIcon
 } from 'lucide-react';
-import { MediaItem, Season, Episode, User } from '../types';
+import { MediaItem, Season, Episode, User, PhysicalFormat, Condition } from '../types';
 import { fetchTMDBSeason, saveTVSeason, toggleEpisodeWatched, updateMediaItem } from '../lib/api';
 import { SeasonSegmenterModal } from './SeasonSegmenterModal';
+import { UK_RETAILERS, getSavedShelfLocations, saveShelfLocation } from '../lib/shelfAndRetailer';
+
+const FORMAT_OPTIONS: PhysicalFormat[] = [
+  '4K Ultra-HD',
+  'Steelbook 4K',
+  'Blu-Ray 1080p',
+  'Steelbook Blu-Ray',
+  '3D Blu-Ray',
+  'DVD',
+  'Box Set'
+];
+
+const CONDITION_OPTIONS: Condition[] = ['Mint', 'Like New', 'Good', 'Fair', 'Poor'];
 
 interface MediaDetailModalProps {
   item: MediaItem;
@@ -95,8 +109,36 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
   const [isLoadingEpisodes, setIsLoadingEpisodes] = useState<boolean>(false);
   const [showAddSeasonModal, setShowAddSeasonModal] = useState<boolean>(false);
   const [showSegmenterModal, setShowSegmenterModal] = useState<boolean>(false);
+
+  // Add Season Form State
   const [newSeasonNumber, setNewSeasonNumber] = useState<number>(seasons.length + 1);
   const [newSeasonName, setNewSeasonName] = useState<string>(`Season ${seasons.length + 1}`);
+  const [newSeasonEpCount, setNewSeasonEpCount] = useState<number>(10);
+  const [newSeasonPosterUrl, setNewSeasonPosterUrl] = useState<string>('');
+  const [newSeasonFormat, setNewSeasonFormat] = useState<PhysicalFormat>(mediaItem.format || '4K Ultra-HD');
+  const [newSeasonEdition, setNewSeasonEdition] = useState<string>('');
+  const [newSeasonShelfLocation, setNewSeasonShelfLocation] = useState<string>(mediaItem.shelfLocation || getSavedShelfLocations()[0] || 'Vault Shelf A1');
+  const [newSeasonPrice, setNewSeasonPrice] = useState<string>('');
+  const [newSeasonRetailer, setNewSeasonRetailer] = useState<string>(mediaItem.purchaseRetailer || 'HMV');
+  const [newSeasonPurchaseDate, setNewSeasonPurchaseDate] = useState<string>('');
+  const [newSeasonDiscsCount, setNewSeasonDiscsCount] = useState<number>(1);
+  const [newSeasonCondition, setNewSeasonCondition] = useState<Condition>(mediaItem.condition || 'Mint');
+  const [newSeasonBarcode, setNewSeasonBarcode] = useState<string>('');
+  const [newSeasonNotes, setNewSeasonNotes] = useState<string>('');
+
+  // Edit Season Physical Specs Modal State
+  const [showEditSeasonSpecsModal, setShowEditSeasonSpecsModal] = useState<boolean>(false);
+  const [editSeasonFormat, setEditSeasonFormat] = useState<PhysicalFormat>('4K Ultra-HD');
+  const [editSeasonEdition, setEditSeasonEdition] = useState<string>('');
+  const [editSeasonShelfLocation, setEditSeasonShelfLocation] = useState<string>('');
+  const [editSeasonPrice, setEditSeasonPrice] = useState<string>('');
+  const [editSeasonRetailer, setEditSeasonRetailer] = useState<string>('');
+  const [editSeasonPurchaseDate, setEditSeasonPurchaseDate] = useState<string>('');
+  const [editSeasonDiscsCount, setEditSeasonDiscsCount] = useState<number>(1);
+  const [editSeasonCondition, setEditSeasonCondition] = useState<Condition>('Mint');
+  const [editSeasonBarcode, setEditSeasonBarcode] = useState<string>('');
+  const [editSeasonNotes, setEditSeasonNotes] = useState<string>('');
+
   const [editingSeasonPoster, setEditingSeasonPoster] = useState<boolean>(false);
   const [seasonPosterInputUrl, setSeasonPosterInputUrl] = useState<string>('');
 
@@ -261,28 +303,128 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
     const seasonToUpdate = seasons.find(s => s.seasonNumber === seasonNum);
     if (!seasonToUpdate) return;
 
-    const updatedSeason: Season = { ...seasonToUpdate, ownedInVault: !seasonToUpdate.ownedInVault };
-    setSeasons(prev => prev.map(s => s.seasonNumber === seasonNum ? updatedSeason : s));
+    if (seasonToUpdate.ownedInVault === false) {
+      setSelectedSeasonNum(seasonNum);
+      setEditSeasonFormat(seasonToUpdate.format || mediaItem.format || '4K Ultra-HD');
+      setEditSeasonEdition(seasonToUpdate.edition || mediaItem.edition || '');
+      setEditSeasonShelfLocation(seasonToUpdate.shelfLocation || mediaItem.shelfLocation || getSavedShelfLocations()[0] || 'Vault Shelf A1');
+      setEditSeasonPrice(seasonToUpdate.purchasePrice !== undefined ? seasonToUpdate.purchasePrice.toString() : (mediaItem.purchasePrice ? mediaItem.purchasePrice.toString() : ''));
+      setEditSeasonRetailer(seasonToUpdate.purchaseRetailer || mediaItem.purchaseRetailer || 'HMV');
+      setEditSeasonPurchaseDate(seasonToUpdate.purchaseDate || mediaItem.purchaseDate || new Date().toISOString().split('T')[0]);
+      setEditSeasonDiscsCount(seasonToUpdate.discsCount !== undefined ? seasonToUpdate.discsCount : (mediaItem.discsCount || 1));
+      setEditSeasonCondition(seasonToUpdate.condition || mediaItem.condition || 'Mint');
+      setEditSeasonBarcode(seasonToUpdate.barcode || mediaItem.barcode || '');
+      setEditSeasonNotes(seasonToUpdate.notes || '');
+      setShowEditSeasonSpecsModal(true);
+    } else {
+      const updatedSeason: Season = { ...seasonToUpdate, ownedInVault: false };
+      setSeasons(prev => prev.map(s => s.seasonNumber === seasonNum ? updatedSeason : s));
+
+      try {
+        const updatedItem = await saveTVSeason(mediaItem.id, updatedSeason);
+        setMediaItem(updatedItem);
+        if (onRefreshItem) onRefreshItem();
+      } catch (err) {
+        console.error('Failed to update season vault ownership:', err);
+      }
+    }
+  };
+
+  const handleOpenAddSeasonModal = () => {
+    const nextNum = seasons.length + 1;
+    setNewSeasonNumber(nextNum);
+    setNewSeasonName(`Season ${nextNum}`);
+    setNewSeasonEpCount(10);
+    setNewSeasonPosterUrl(mediaItem.posterUrl || '');
+    setNewSeasonFormat(mediaItem.format || '4K Ultra-HD');
+    setNewSeasonEdition(mediaItem.edition || '');
+    setNewSeasonShelfLocation(mediaItem.shelfLocation || getSavedShelfLocations()[0] || 'Vault Shelf A1');
+    setNewSeasonPrice(mediaItem.purchasePrice ? mediaItem.purchasePrice.toString() : '');
+    setNewSeasonRetailer(mediaItem.purchaseRetailer || 'HMV');
+    setNewSeasonPurchaseDate(new Date().toISOString().split('T')[0]);
+    setNewSeasonDiscsCount(1);
+    setNewSeasonCondition(mediaItem.condition || 'Mint');
+    setNewSeasonBarcode('');
+    setNewSeasonNotes('');
+    setShowAddSeasonModal(true);
+  };
+
+  const handleOpenEditSeasonSpecsModal = () => {
+    if (!activeSeason) return;
+    setEditSeasonFormat(activeSeason.format || mediaItem.format || '4K Ultra-HD');
+    setEditSeasonEdition(activeSeason.edition || mediaItem.edition || '');
+    setEditSeasonShelfLocation(activeSeason.shelfLocation || mediaItem.shelfLocation || 'Vault Shelf A1');
+    setEditSeasonPrice(activeSeason.purchasePrice !== undefined ? activeSeason.purchasePrice.toString() : (mediaItem.purchasePrice ? mediaItem.purchasePrice.toString() : ''));
+    setEditSeasonRetailer(activeSeason.purchaseRetailer || mediaItem.purchaseRetailer || 'HMV');
+    setEditSeasonPurchaseDate(activeSeason.purchaseDate || mediaItem.purchaseDate || '');
+    setEditSeasonDiscsCount(activeSeason.discsCount !== undefined ? activeSeason.discsCount : (mediaItem.discsCount || 1));
+    setEditSeasonCondition(activeSeason.condition || mediaItem.condition || 'Mint');
+    setEditSeasonBarcode(activeSeason.barcode || mediaItem.barcode || '');
+    setEditSeasonNotes(activeSeason.notes || '');
+    setShowEditSeasonSpecsModal(true);
+  };
+
+  const handleSaveEditedSeasonSpecs = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeSeason) return;
+
+    if (editSeasonShelfLocation.trim()) {
+      saveShelfLocation(editSeasonShelfLocation.trim());
+    }
+
+    const updatedSeason: Season = {
+      ...activeSeason,
+      ownedInVault: true,
+      format: editSeasonFormat,
+      edition: editSeasonEdition.trim() || undefined,
+      shelfLocation: editSeasonShelfLocation.trim() || 'Vault Shelf A1',
+      purchasePrice: editSeasonPrice ? parseFloat(editSeasonPrice) : undefined,
+      purchaseRetailer: editSeasonRetailer.trim() || undefined,
+      purchaseDate: editSeasonPurchaseDate || undefined,
+      discsCount: Number(editSeasonDiscsCount) || 1,
+      condition: editSeasonCondition || 'Mint',
+      barcode: editSeasonBarcode.trim() || undefined,
+      notes: editSeasonNotes.trim() || undefined
+    };
+
+    const updatedSeasons = seasons.map(s => s.seasonNumber === activeSeason.seasonNumber ? updatedSeason : s);
+    setSeasons(updatedSeasons);
+    setShowEditSeasonSpecsModal(false);
 
     try {
       const updatedItem = await saveTVSeason(mediaItem.id, updatedSeason);
       setMediaItem(updatedItem);
       if (onRefreshItem) onRefreshItem();
     } catch (err) {
-      console.error('Failed to update season vault ownership:', err);
+      console.error('Failed to update season specs:', err);
     }
   };
 
   const handleAddCustomSeason = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (newSeasonShelfLocation.trim()) {
+      saveShelfLocation(newSeasonShelfLocation.trim());
+    }
+
     const newSeason: Season = {
       seasonNumber: newSeasonNumber,
-      name: newSeasonName,
-      episodeCount: 10,
-      ownedInVault: true
+      name: newSeasonName.trim() || `Season ${newSeasonNumber}`,
+      episodeCount: Number(newSeasonEpCount) || 10,
+      posterUrl: newSeasonPosterUrl.trim() || mediaItem.posterUrl,
+      ownedInVault: true,
+      format: newSeasonFormat,
+      edition: newSeasonEdition.trim() || undefined,
+      shelfLocation: newSeasonShelfLocation.trim() || 'Vault Shelf A1',
+      purchasePrice: newSeasonPrice ? parseFloat(newSeasonPrice) : undefined,
+      purchaseRetailer: newSeasonRetailer.trim() || undefined,
+      purchaseDate: newSeasonPurchaseDate || undefined,
+      discsCount: Number(newSeasonDiscsCount) || 1,
+      condition: newSeasonCondition || 'Mint',
+      barcode: newSeasonBarcode.trim() || undefined,
+      notes: newSeasonNotes.trim() || undefined
     };
 
-    const updatedSeasons = [...seasons, newSeason].sort((a, b) => a.seasonNumber - b.seasonNumber);
+    const updatedSeasons = [...seasons.filter(s => s.seasonNumber !== newSeasonNumber), newSeason].sort((a, b) => a.seasonNumber - b.seasonNumber);
     setSeasons(updatedSeasons);
     setSelectedSeasonNum(newSeasonNumber);
     setShowAddSeasonModal(false);
@@ -355,9 +497,11 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                 <span className="px-2.5 py-0.5 rounded-md bg-amber-500 text-slate-950 text-xs font-black uppercase tracking-wide">
                   {item.format}
                 </span>
-                <span className="px-2.5 py-0.5 rounded-md bg-slate-800/90 border border-slate-700 text-xs font-mono text-cyan-300">
-                  {item.edition || 'Standard Edition'}
-                </span>
+                {item.edition && (
+                  <span className="px-2.5 py-0.5 rounded-md bg-slate-800/90 border border-slate-700 text-xs font-mono text-cyan-300">
+                    {item.edition}
+                  </span>
+                )}
                 {mediaItem.isWishlist && (
                   <span className="px-2.5 py-0.5 rounded-md bg-purple-950/90 border border-purple-500/50 text-xs font-extrabold text-purple-300 flex items-center gap-1 shadow-md shadow-purple-900/30">
                     <BookmarkCheck className="w-3.5 h-3.5 text-purple-400" /> Wishlist Item
@@ -467,8 +611,8 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                     <span>Auto-Segment / Split Seasons</span>
                   </button>
                   <button
-                    onClick={() => setShowAddSeasonModal(true)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs transition-all border border-slate-700"
+                    onClick={handleOpenAddSeasonModal}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs transition-all border border-slate-700 cursor-pointer"
                   >
                     <Plus className="w-4 h-4 text-cyan-400" /> Add Season
                   </button>
@@ -552,10 +696,10 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                         className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
                           activeSeason.ownedInVault !== false
                             ? 'bg-emerald-950/80 text-emerald-300 border-emerald-700/80 hover:bg-emerald-900'
-                            : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                            : 'bg-indigo-600 hover:bg-indigo-500 text-white border-indigo-500 shadow-md shadow-indigo-600/20 cursor-pointer'
                         }`}
                       >
-                        {activeSeason.ownedInVault !== false ? '✓ In Vault Collection' : '+ Mark Owned in Vault'}
+                        {activeSeason.ownedInVault !== false ? '✓ In Vault Collection' : '+ Add Season to Vault'}
                       </button>
 
                       <button
@@ -568,6 +712,68 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                       </button>
                     </div>
                   </div>
+
+                  {/* Physical Copy Specs for Active Season */}
+                  {isCompleteTvSeries(mediaItem) ? (
+                    <div className="p-3 bg-amber-950/20 border border-amber-800/40 rounded-xl flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-2">
+                        <Box className="w-4 h-4 text-amber-400 shrink-0" />
+                        <span className="text-amber-200">
+                          <strong>Complete Series Boxset:</strong> Top-level physical specs apply to this entire set ({mediaItem.format} • {mediaItem.purchasePrice !== undefined ? formatPrice(mediaItem.purchasePrice) : 'Price N/A'} at {mediaItem.purchaseRetailer || 'Retailer N/A'} • {mediaItem.shelfLocation}).
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-3.5 bg-slate-950/90 border border-indigo-500/30 rounded-xl space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-black text-indigo-300 flex items-center gap-1.5 uppercase tracking-wider">
+                          <Disc className="w-4 h-4 text-indigo-400" /> {activeSeason.name || (activeSeason.seasonNumber === 0 ? 'Specials & Christmas Specials' : `Season ${activeSeason.seasonNumber}`)} Physical Disc Specifications
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleOpenEditSeasonSpecsModal}
+                          className="px-2.5 py-1 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/40 text-xs font-bold flex items-center gap-1 transition-all cursor-pointer"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                          <span>Edit Season Specs</span>
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                        <div className="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
+                          <span className="text-[10px] text-slate-400 block font-medium">Format & Edition</span>
+                          <span className="font-bold text-white truncate block">
+                            {activeSeason.format || mediaItem.format} {activeSeason.edition ? `(${activeSeason.edition})` : ''}
+                          </span>
+                        </div>
+
+                        <div className="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
+                          <span className="text-[10px] text-slate-400 block font-medium">Shelf Location</span>
+                          <span className="font-bold text-cyan-300 flex items-center gap-1 truncate">
+                            <MapPin className="w-3 h-3 text-cyan-400 shrink-0" />
+                            <span className="truncate">{activeSeason.shelfLocation || mediaItem.shelfLocation}</span>
+                          </span>
+                        </div>
+
+                        <div className="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
+                          <span className="text-[10px] text-slate-400 block font-medium">Purchase Price</span>
+                          <span className="font-bold text-emerald-400 font-mono flex items-center gap-1">
+                            <Tag className="w-3 h-3 text-emerald-400" />
+                            {activeSeason.purchasePrice !== undefined
+                              ? formatPrice(activeSeason.purchasePrice)
+                              : (mediaItem.purchasePrice ? formatPrice(mediaItem.purchasePrice) : 'Not Specified')}
+                          </span>
+                        </div>
+
+                        <div className="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
+                          <span className="text-[10px] text-slate-400 block font-medium">Retailer & Date</span>
+                          <span className="font-bold text-slate-200 truncate block">
+                            {activeSeason.purchaseRetailer || mediaItem.purchaseRetailer || 'N/A'} {activeSeason.purchaseDate ? `(${activeSeason.purchaseDate})` : ''}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Inline Season Boxart Editor Strip */}
                   {editingSeasonPoster && (
@@ -735,20 +941,21 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
 
           {/* Add Season Modal Inline */}
           {showAddSeasonModal && (
-            <div className="p-4 bg-slate-950 border border-cyan-500/40 rounded-2xl space-y-3 animate-fade-in">
+            <div className="p-4 bg-slate-950 border border-cyan-500/40 rounded-2xl space-y-4 animate-fade-in shadow-xl">
               <div className="flex items-center justify-between border-b border-slate-800 pb-2">
                 <h4 className="text-xs font-extrabold text-cyan-300 uppercase tracking-wide flex items-center gap-1.5">
-                  <Plus className="w-4 h-4" /> Add Season to Collection
+                  <Plus className="w-4 h-4 text-cyan-400" /> Add New Season to Collection
                 </h4>
                 <button onClick={() => setShowAddSeasonModal(false)} className="text-slate-400 hover:text-white">
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
-              <form onSubmit={handleAddCustomSeason} className="space-y-3">
-                <div className="grid grid-cols-2 gap-3">
+              <form onSubmit={handleAddCustomSeason} className="space-y-4">
+                {/* Basic Season Info */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
-                    <label className="text-[11px] text-slate-400 block mb-1">Season Number</label>
+                    <label className="text-[11px] text-slate-400 block mb-1 font-medium">Season Number *</label>
                     <input
                       type="number"
                       min="1"
@@ -763,8 +970,8 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                     />
                   </div>
 
-                  <div>
-                    <label className="text-[11px] text-slate-400 block mb-1">Season Title</label>
+                  <div className="sm:col-span-2">
+                    <label className="text-[11px] text-slate-400 block mb-1 font-medium">Season Title *</label>
                     <input
                       type="text"
                       required
@@ -775,22 +982,309 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                   </div>
                 </div>
 
-                <div className="flex justify-end gap-2">
+                {/* Episode Count & Poster */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[11px] text-slate-400 block mb-1 font-medium">Episode Count</label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={newSeasonEpCount}
+                      onChange={(e) => setNewSeasonEpCount(Number(e.target.value))}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] text-slate-400 block mb-1 font-medium">Boxart Poster Image URL</label>
+                    <input
+                      type="text"
+                      placeholder="https://..."
+                      value={newSeasonPosterUrl}
+                      onChange={(e) => setNewSeasonPosterUrl(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white font-mono"
+                    />
+                  </div>
+                </div>
+
+                {/* Physical Copy Details */}
+                <div className="p-3 bg-slate-900/60 border border-slate-800 rounded-xl space-y-3">
+                  <h5 className="text-[11px] font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <Disc className="w-3.5 h-3.5 text-indigo-400" /> Season Physical Disc & Purchase Details
+                  </h5>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1 font-medium">Physical Format</label>
+                      <select
+                        value={newSeasonFormat}
+                        onChange={(e) => setNewSeasonFormat(e.target.value as PhysicalFormat)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white"
+                      >
+                        {FORMAT_OPTIONS.map(fmt => (
+                          <option key={fmt} value={fmt}>{fmt}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1 font-medium">Edition</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Steelbook / Standard"
+                        value={newSeasonEdition}
+                        onChange={(e) => setNewSeasonEdition(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1 font-medium">Discs Count</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={newSeasonDiscsCount}
+                        onChange={(e) => setNewSeasonDiscsCount(Number(e.target.value))}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1 font-medium">Purchase Price (£)</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder="e.g. 19.99"
+                        value={newSeasonPrice}
+                        onChange={(e) => setNewSeasonPrice(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-emerald-400 font-mono font-bold"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1 font-medium">Retailer / Store</label>
+                      <input
+                        type="text"
+                        list="retailers-list-add"
+                        placeholder="e.g. HMV, Zavvi"
+                        value={newSeasonRetailer}
+                        onChange={(e) => setNewSeasonRetailer(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white"
+                      />
+                      <datalist id="retailers-list-add">
+                        {UK_RETAILERS.map(r => (
+                          <option key={r} value={r} />
+                        ))}
+                      </datalist>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1 font-medium">Shelf Location</label>
+                      <input
+                        type="text"
+                        list="shelves-list-add"
+                        placeholder="e.g. Vault Shelf A1"
+                        value={newSeasonShelfLocation}
+                        onChange={(e) => setNewSeasonShelfLocation(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-cyan-300 font-bold"
+                      />
+                      <datalist id="shelves-list-add">
+                        {getSavedShelfLocations().map(loc => (
+                          <option key={loc} value={loc} />
+                        ))}
+                      </datalist>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1 font-medium">Purchase Date</label>
+                      <input
+                        type="date"
+                        value={newSeasonPurchaseDate}
+                        onChange={(e) => setNewSeasonPurchaseDate(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1 font-medium">Disc Condition</label>
+                      <select
+                        value={newSeasonCondition}
+                        onChange={(e) => setNewSeasonCondition(e.target.value as Condition)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white"
+                      >
+                        {CONDITION_OPTIONS.map(c => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
                   <button
                     type="button"
                     onClick={() => setShowAddSeasonModal(false)}
-                    className="px-3 py-1.5 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold"
+                    className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold hover:bg-slate-700"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className="px-4 py-1.5 rounded-xl bg-cyan-500 text-slate-950 text-xs font-bold hover:bg-cyan-400"
+                    className="px-5 py-2 rounded-xl bg-cyan-500 text-slate-950 text-xs font-black hover:bg-cyan-400 shadow-lg shadow-cyan-500/20 cursor-pointer"
                   >
                     Add Season
                   </button>
                 </div>
               </form>
+            </div>
+          )}
+
+          {/* Edit Season Specs Modal */}
+          {showEditSeasonSpecsModal && activeSeason && (
+            <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-fade-in">
+              <div className="bg-slate-900 border border-indigo-500/40 rounded-2xl max-w-lg w-full p-5 space-y-4 shadow-2xl">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <h4 className="text-sm font-extrabold text-indigo-300 uppercase tracking-wide flex items-center gap-2">
+                    <Edit3 className="w-4 h-4 text-indigo-400" />
+                    {activeSeason.ownedInVault === false
+                      ? `Add ${activeSeason.name || (activeSeason.seasonNumber === 0 ? 'Specials & Christmas Specials' : `Season ${activeSeason.seasonNumber}`)} to Vault`
+                      : `Edit ${activeSeason.name || (activeSeason.seasonNumber === 0 ? 'Specials & Christmas Specials' : `Season ${activeSeason.seasonNumber}`)} Physical Specs`}
+                  </h4>
+                  <button onClick={() => setShowEditSeasonSpecsModal(false)} className="text-slate-400 hover:text-white">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <form onSubmit={handleSaveEditedSeasonSpecs} className="space-y-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1 font-medium">Format</label>
+                      <select
+                        value={editSeasonFormat}
+                        onChange={(e) => setEditSeasonFormat(e.target.value as PhysicalFormat)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white"
+                      >
+                        {FORMAT_OPTIONS.map(fmt => (
+                          <option key={fmt} value={fmt}>{fmt}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1 font-medium">Edition</label>
+                      <input
+                        type="text"
+                        value={editSeasonEdition}
+                        onChange={(e) => setEditSeasonEdition(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1 font-medium">Shelf Location</label>
+                      <input
+                        type="text"
+                        list="shelves-list-edit"
+                        value={editSeasonShelfLocation}
+                        onChange={(e) => setEditSeasonShelfLocation(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-cyan-300 font-bold"
+                      />
+                      <datalist id="shelves-list-edit">
+                        {getSavedShelfLocations().map(loc => (
+                          <option key={loc} value={loc} />
+                        ))}
+                      </datalist>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1 font-mono font-medium">Purchase Price (£)</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={editSeasonPrice}
+                        onChange={(e) => setEditSeasonPrice(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-emerald-400 font-bold font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1 font-medium">Purchase Retailer</label>
+                      <input
+                        type="text"
+                        list="retailers-list-edit"
+                        value={editSeasonRetailer}
+                        onChange={(e) => setEditSeasonRetailer(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white"
+                      />
+                      <datalist id="retailers-list-edit">
+                        {UK_RETAILERS.map(r => (
+                          <option key={r} value={r} />
+                        ))}
+                      </datalist>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1 font-medium">Purchase Date</label>
+                      <input
+                        type="date"
+                        value={editSeasonPurchaseDate}
+                        onChange={(e) => setEditSeasonPurchaseDate(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1 font-medium">Discs Count</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={editSeasonDiscsCount}
+                        onChange={(e) => setEditSeasonDiscsCount(Number(e.target.value))}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white font-mono"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1 font-medium">Condition</label>
+                      <select
+                        value={editSeasonCondition}
+                        onChange={(e) => setEditSeasonCondition(e.target.value as Condition)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white"
+                      >
+                        {CONDITION_OPTIONS.map(c => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => setShowEditSeasonSpecsModal(false)}
+                      className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold hover:bg-slate-700"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow-lg shadow-indigo-600/30 cursor-pointer"
+                    >
+                      {activeSeason.ownedInVault === false ? 'Add Season to Vault' : 'Save Season Specs'}
+                    </button>
+                  </div>
+                </form>
+              </div>
             </div>
           )}
 

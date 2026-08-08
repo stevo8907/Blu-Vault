@@ -53,6 +53,9 @@ export const LoginView: React.FC<LoginViewProps> = ({
 
           <h1 className="text-2xl font-black text-white tracking-wider">BLU-VAULT</h1>
           <p className="text-xs text-slate-400 font-mono mt-1">Physical Media Collection Server</p>
+          <div className="mt-2.5 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-slate-900/90 border border-slate-800 text-[11px] text-cyan-400/90 font-mono">
+            <span>Version 0.1.0-alpha</span>
+          </div>
         </div>
 
         {/* Login Form */}
