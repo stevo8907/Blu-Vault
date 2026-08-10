@@ -88,6 +88,14 @@ export interface Season {
   notes?: string;
 }
 
+export interface CollectionInfo {
+  id: number;
+  name: string;
+  posterUrl?: string;
+  backdropUrl?: string;
+  overview?: string;
+}
+
 export interface MediaItem {
   id: string;
   tmdbId?: number;
@@ -111,6 +119,7 @@ export interface MediaItem {
   director?: string;
   cast?: string[];
   studio?: string;
+  collectionInfo?: CollectionInfo;
   
   // Physical Collection Details
   format: PhysicalFormat;

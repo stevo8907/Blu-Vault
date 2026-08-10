@@ -9,6 +9,7 @@ import { VaultStatsView } from './components/VaultStatsView';
 import { ApiSettingsView } from './components/ApiSettingsView';
 import { UserManagementView } from './components/UserManagementView';
 import { UserSettingsModal } from './components/UserSettingsModal';
+import { FranchisesView } from './components/FranchisesView';
 import { OobeSetupView } from './components/OobeSetupView';
 import { LoginView } from './components/LoginView';
 
@@ -63,7 +64,13 @@ export default function App() {
   const [selectedSeasonForModal, setSelectedSeasonForModal] = useState<number | undefined>(undefined);
   const [editingMediaItem, setEditingMediaItem] = useState<MediaItem | null>(null);
   const [isAddMediaOpen, setIsAddMediaOpen] = useState(false);
+  const [addMediaInitialQuery, setAddMediaInitialQuery] = useState<string | undefined>(undefined);
   const [isUserSettingsOpen, setIsUserSettingsOpen] = useState(false);
+
+  const handleOpenAddMedia = (initialQuery?: string) => {
+    setAddMediaInitialQuery(initialQuery);
+    setIsAddMediaOpen(true);
+  };
 
   // TV Shows Seasons Collapse / Expand State
   const [expandedShowIds, setExpandedShowIds] = useState<Set<string>>(new Set());
@@ -484,10 +491,8 @@ export default function App() {
         onSearchChange={setSearchQuery}
         currentUser={currentUser}
         onOpenUserSettings={() => setIsUserSettingsOpen(true)}
-        onOpenAddMedia={() => {
-          if (activeCategory === 'add-media') return;
-          setIsAddMediaOpen(true);
-        }}
+        onOpenSettings={() => setActiveCategory('api-settings')}
+        onOpenAddMedia={() => handleOpenAddMedia()}
         onLogout={handleLogout}
         totalMediaCount={mediaItems.length}
         theme={theme}
@@ -503,7 +508,7 @@ export default function App() {
           activeCategory={activeCategory}
           onSelectCategory={(cat) => {
             if (cat === 'add-media') {
-              setIsAddMediaOpen(true);
+              handleOpenAddMedia();
             } else {
               setActiveCategory(cat);
             }
@@ -559,11 +564,23 @@ export default function App() {
             />
           )}
 
+          {/* FRANCHISES & BOX SETS (COLLECTARR ENGINE) VIEW */}
+          {activeCategory === 'collectarr-franchises' && (
+            <FranchisesView
+              mediaItems={mediaItems}
+              currentUser={currentUser}
+              onRefreshMedia={handleRefreshMedia}
+              onSelectMediaItem={(item) => setSelectedMediaDetail(item)}
+              onOpenAddMediaModal={(initialTitle) => handleOpenAddMedia(initialTitle)}
+            />
+          )}
+
           {/* PRIMARY MEDIA GRID LIBRARIES (Movies / TV / Games) */}
           {activeCategory !== 'loans' && 
            activeCategory !== 'stats' && 
            activeCategory !== 'api-settings' && 
-           activeCategory !== 'user-management' && (
+           activeCategory !== 'user-management' && 
+           activeCategory !== 'collectarr-franchises' && (
             currentUser?.permissions && currentUser.permissions.canViewMedia === false ? (
               <div className="p-8 bg-slate-900/90 border border-slate-800 rounded-3xl max-w-2xl mx-auto text-center space-y-4 shadow-2xl my-12 animate-fade-in">
                 <div className="w-16 h-16 rounded-2xl bg-rose-950/80 border border-rose-800 text-rose-400 flex items-center justify-center mx-auto text-2xl shadow-inner">
@@ -786,6 +803,7 @@ export default function App() {
             const data = await fetchMedia();
             setMediaItems(data);
           }}
+          onOpenAddMedia={(initialQuery) => handleOpenAddMedia(initialQuery)}
         />
       )}
 
@@ -803,9 +821,13 @@ export default function App() {
       {isAddMediaOpen && (
         <AddMediaModal
           isOpen={isAddMediaOpen}
-          onClose={() => setIsAddMediaOpen(false)}
+          onClose={() => {
+            setIsAddMediaOpen(false);
+            setAddMediaInitialQuery(undefined);
+          }}
           currentUser={currentUser}
           onMediaAdded={handleMediaAdded}
+          initialQuery={addMediaInitialQuery}
         />
       )}
 

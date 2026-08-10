@@ -34,13 +34,15 @@ interface AddMediaModalProps {
   onClose: () => void;
   currentUser: User | null;
   onMediaAdded: (newItem: MediaItem) => void;
+  initialQuery?: string;
 }
 
 export const AddMediaModal: React.FC<AddMediaModalProps> = ({
   isOpen,
   onClose,
   currentUser,
-  onMediaAdded
+  onMediaAdded,
+  initialQuery
 }) => {
   // Step 1: 'search', Step 2: 'review'
   const [step, setStep] = useState<'search' | 'review'>('search');
@@ -105,6 +107,22 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
       setIsSearching(false);
     }
   };
+
+  // Trigger search on initial query prop when modal opens
+  useEffect(() => {
+    if (isOpen && initialQuery && initialQuery.trim()) {
+      setSearchQuery(initialQuery);
+      setStep('search');
+      setIsSearching(true);
+      searchTMDB(initialQuery, 'multi')
+        .then((res) => {
+          setSearchResults(res.results || []);
+          setApiSource(res.source || 'tmdb');
+        })
+        .catch(err => console.error('Initial query search error:', err))
+        .finally(() => setIsSearching(false));
+    }
+  }, [isOpen, initialQuery]);
 
   // Trigger search on tab change
   useEffect(() => {

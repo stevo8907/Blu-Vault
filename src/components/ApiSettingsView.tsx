@@ -3,11 +3,11 @@ import {
   Settings, Key, CheckCircle, RefreshCw, Plus, Trash2, Power, Globe, 
   Download, Upload, ShieldCheck, Loader2, AlertTriangle, Lock, ShieldAlert, 
   X, Eye, EyeOff, RotateCcw, Server, Coins, Sparkles, SlidersHorizontal, Database, Layers, Users,
-  Clock, Calendar, HardDrive, History, Play, Check, Save, FileJson, CheckSquare
+  Clock, Calendar, HardDrive, History, Play, Check, Save, FileJson, CheckSquare, FileSpreadsheet
 } from 'lucide-react';
 import { ApiConfig, User, AutoBackupConfig, BackupSnapshot } from '../types';
 import { 
-  fetchApiConfigs, saveApiConfigs, testApiConfig, exportVaultBackup, importVaultBackup, 
+  fetchApiConfigs, saveApiConfigs, testApiConfig, exportVaultBackup, exportVaultOnlyJSON, exportSystemOnlyJSON, exportCollectionCSV, importVaultBackup, importVaultOnlyJSON, importSystemOnlyJSON, fetchDatabaseStatus,
   resetSystemToDefault, restartSystem, powerOffSystem,
   fetchAutoBackupConfig, saveAutoBackupConfig, triggerAutoBackupNow, deleteBackupSnapshot, restoreBackupSnapshot, downloadBackupSnapshot
 } from '../lib/api';
@@ -60,8 +60,10 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, u
   const [isResetting, setIsResetting] = useState(false);
   const [powerStatusMessage, setPowerStatusMessage] = useState<string | null>(null);
 
-  // Import JSON File ref
+  // Import JSON File refs
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const vaultFileInputRef = React.useRef<HTMLInputElement>(null);
+  const systemFileInputRef = React.useRef<HTMLInputElement>(null);
 
   // Automated Backup System State
   const [autoBackupConfig, setAutoBackupConfig] = useState<AutoBackupConfig>({
@@ -73,6 +75,11 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, u
     backupLocation: '/data/backups/'
   });
   const [backupSnapshots, setBackupSnapshots] = useState<BackupSnapshot[]>([]);
+  const [dbStatus, setDbStatus] = useState<{
+    segmented: boolean;
+    systemDb: { filename: string; path: string; exists: boolean; sizeBytes: number; updatedAt: string; userCount: number; apiConfigCount: number };
+    vaultDb: { filename: string; path: string; exists: boolean; sizeBytes: number; updatedAt: string; mediaCount: number };
+  } | null>(null);
   const [isAutoBackupLoading, setIsAutoBackupLoading] = useState(false);
   const [isSavingAutoBackup, setIsSavingAutoBackup] = useState(false);
   const [isTriggeringBackup, setIsTriggeringBackup] = useState(false);
@@ -82,9 +89,13 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, u
   const loadAutoBackupData = async () => {
     setIsAutoBackupLoading(true);
     try {
-      const { config, snapshots } = await fetchAutoBackupConfig();
+      const [{ config, snapshots }, status] = await Promise.all([
+        fetchAutoBackupConfig(),
+        fetchDatabaseStatus().catch(() => null)
+      ]);
       if (config) setAutoBackupConfig(config);
       setBackupSnapshots(snapshots || []);
+      if (status) setDbStatus(status);
     } catch (err: any) {
       console.error('Error loading auto backup config:', err);
     } finally {
@@ -276,6 +287,52 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, u
     reader.readAsText(file);
   };
 
+  // Import Vault-Only JSON File (Excludes users & settings)
+  const handleVaultImportFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const jsonData = JSON.parse(event.target?.result as string);
+        const res = await importVaultOnlyJSON(jsonData);
+        if (res.success) {
+          alert(`Successfully imported ${res.mediaCount} vault items without modifying users or system settings!`);
+          if (onMediaImported) onMediaImported();
+        } else {
+          alert(`Import failed: ${res.message}`);
+        }
+      } catch (err: any) {
+        alert(`Failed to parse vault backup JSON file: ${err.message}`);
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  // Import System-Only JSON File (Excludes media vault)
+  const handleSystemImportFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const jsonData = JSON.parse(event.target?.result as string);
+        const res = await importSystemOnlyJSON(jsonData);
+        if (res.success) {
+          alert(`Successfully imported system settings and users!`);
+          if (onRefreshUsers) onRefreshUsers();
+        } else {
+          alert(`Import failed: ${res.message}`);
+        }
+      } catch (err: any) {
+        alert(`Failed to parse system backup JSON file: ${err.message}`);
+      }
+    };
+    reader.readAsText(file);
+  };
+
   const SETTINGS_TABS: TabItem[] = [
     { 
       id: 'api', 
@@ -313,7 +370,7 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, u
     { 
       id: 'data', 
       label: 'Database & Backup', 
-      description: 'Export JSON or restore backup', 
+      description: 'Export JSON/CSV or restore backup', 
       icon: Database 
     },
     { 
@@ -625,28 +682,59 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, u
 
           {/* CARD 1: MANUAL EXPORT & RESTORE */}
           <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 space-y-4">
-            <h3 className="font-extrabold text-base text-white flex items-center gap-2">
-              <Download className="w-5 h-5 text-cyan-400" /> Database Backup & Migration
-            </h3>
-            <p className="text-xs text-slate-400">
-              Export your entire Blu-Vault database (movies, TV shows, box sets, shelf locations, loans) as a JSON file or restore a backup file.
-            </p>
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              <div>
+                <h3 className="font-extrabold text-base text-white flex items-center gap-2">
+                  <Download className="w-5 h-5 text-cyan-400" /> Segmented Database Backup & Migration
+                </h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  Blu-Vault stores application configuration (<span className="text-cyan-400 font-mono">bluvault-system.json</span>) separately from your media library (<span className="text-cyan-400 font-mono">bluvault-vault.json</span>). This allows clean vault migration between different systems without touching user accounts or server settings.
+                </p>
+              </div>
+            </div>
 
             <div className="flex flex-wrap items-center gap-3 pt-2">
               <button
+                onClick={exportVaultOnlyJSON}
+                className="px-5 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold transition-all shadow-md flex items-center gap-2"
+                title="Export only media items without users or settings"
+              >
+                <Layers className="w-4 h-4" />
+                <span>Export Vault Only (JSON)</span>
+              </button>
+
+              <button
                 onClick={exportVaultBackup}
                 className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all shadow-md flex items-center gap-2"
+                title="Export full database snapshot including users and settings"
               >
                 <Download className="w-4 h-4" />
-                <span>Export Database (JSON)</span>
+                <span>Export Full DB (JSON)</span>
+              </button>
+
+              <button
+                onClick={exportCollectionCSV}
+                className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-md flex items-center gap-2"
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                <span>Export Collection (CSV)</span>
+              </button>
+
+              <button
+                onClick={() => vaultFileInputRef.current?.click()}
+                className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 text-xs font-bold border border-cyan-800/60 transition-all flex items-center gap-2"
+                title="Import vault items without changing target users or system settings"
+              >
+                <Upload className="w-4 h-4 text-cyan-400" />
+                <span>Import Vault Only</span>
               </button>
 
               <button
                 onClick={() => fileInputRef.current?.click()}
                 className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 transition-all flex items-center gap-2"
               >
-                <Upload className="w-4 h-4 text-cyan-400" />
-                <span>Restore Backup File</span>
+                <Upload className="w-4 h-4 text-slate-400" />
+                <span>Restore Full Backup</span>
               </button>
 
               <input
@@ -656,6 +744,169 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, u
                 onChange={handleImportFileChange}
                 className="hidden"
               />
+
+              <input
+                type="file"
+                ref={vaultFileInputRef}
+                accept=".json"
+                onChange={handleVaultImportFileChange}
+                className="hidden"
+              />
+
+              <input
+                type="file"
+                ref={systemFileInputRef}
+                accept=".json"
+                onChange={handleSystemImportFileChange}
+                className="hidden"
+              />
+            </div>
+          </div>
+
+          {/* CARD 1B: LIVE SEGMENTED DATABASE FILES STATUS */}
+          <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 space-y-4">
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              <div>
+                <h3 className="font-extrabold text-base text-white flex items-center gap-2">
+                  <Database className="w-5 h-5 text-indigo-400" /> Active Database Files on Disk
+                </h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  Blu-Vault operates using two distinct JSON files stored in the <span className="text-cyan-400 font-mono">/data</span> directory:
+                </p>
+              </div>
+              <button
+                onClick={loadAutoBackupData}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold flex items-center gap-1.5 border border-slate-700 transition-colors"
+              >
+                <RefreshCw className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Refresh File Info</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* SYSTEM DB CARD */}
+              <div className="p-4 rounded-2xl bg-slate-950/80 border border-indigo-900/50 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                      <Server className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-extrabold text-white font-mono">bluvault-system.json</div>
+                      <div className="text-[10px] text-slate-400">System, Users & Settings Database</div>
+                    </div>
+                  </div>
+                  {dbStatus?.systemDb?.exists !== false ? (
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                      Active / Online
+                    </span>
+                  ) : (
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-rose-500/20 text-rose-400 border border-rose-500/40">
+                      Offline
+                    </span>
+                  )}
+                </div>
+
+                <div className="bg-slate-900/80 rounded-xl p-3 text-xs space-y-1.5 border border-slate-800/80">
+                  <div className="flex justify-between text-slate-300">
+                    <span className="text-slate-500 font-mono">Location:</span>
+                    <span className="font-mono text-indigo-300">data/bluvault-system.json</span>
+                  </div>
+                  <div className="flex justify-between text-slate-300">
+                    <span className="text-slate-500 font-mono">Contents:</span>
+                    <span className="font-bold text-white">
+                      {dbStatus ? `${dbStatus.systemDb.userCount} User(s) • ${dbStatus.systemDb.apiConfigCount} API Key(s)` : 'Loading...'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-slate-300">
+                    <span className="text-slate-500 font-mono">File Size:</span>
+                    <span className="font-mono text-emerald-400 font-bold">
+                      {dbStatus?.systemDb?.sizeBytes ? `${(dbStatus.systemDb.sizeBytes / 1024).toFixed(2)} KB` : 'Active on Disk'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={exportSystemOnlyJSON}
+                    className="py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-md"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download</span>
+                  </button>
+
+                  <button
+                    onClick={() => systemFileInputRef.current?.click()}
+                    className="py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-indigo-800/60 text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-md"
+                  >
+                    <Upload className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Restore</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* VAULT DB CARD */}
+              <div className="p-4 rounded-2xl bg-slate-950/80 border border-cyan-900/50 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 rounded-xl bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                      <Layers className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-extrabold text-white font-mono">bluvault-vault.json</div>
+                      <div className="text-[10px] text-slate-400">Media Library & Collection Database</div>
+                    </div>
+                  </div>
+                  {dbStatus?.vaultDb?.exists !== false ? (
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                      Active / Online
+                    </span>
+                  ) : (
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-rose-500/20 text-rose-400 border border-rose-500/40">
+                      Offline
+                    </span>
+                  )}
+                </div>
+
+                <div className="bg-slate-900/80 rounded-xl p-3 text-xs space-y-1.5 border border-slate-800/80">
+                  <div className="flex justify-between text-slate-300">
+                    <span className="text-slate-500 font-mono">Location:</span>
+                    <span className="font-mono text-cyan-300">data/bluvault-vault.json</span>
+                  </div>
+                  <div className="flex justify-between text-slate-300">
+                    <span className="text-slate-500 font-mono">Contents:</span>
+                    <span className="font-bold text-white">
+                      {dbStatus ? `${dbStatus.vaultDb.mediaCount} Media Item(s)` : 'Loading...'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-slate-300">
+                    <span className="text-slate-500 font-mono">File Size:</span>
+                    <span className="font-mono text-emerald-400 font-bold">
+                      {dbStatus?.vaultDb?.sizeBytes ? `${(dbStatus.vaultDb.sizeBytes / 1024).toFixed(2)} KB` : 'Active on Disk'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={exportVaultOnlyJSON}
+                    className="py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-md"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download</span>
+                  </button>
+
+                  <button
+                    onClick={() => vaultFileInputRef.current?.click()}
+                    className="py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-800/60 text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-md"
+                  >
+                    <Upload className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>Restore</span>
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -917,6 +1168,56 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, u
               </div>
             )}
           </div>
+
+          {/* CARD 4: SIMPLE UPDATING GUIDE */}
+          <div className="bg-gradient-to-r from-blue-950/70 via-slate-900 to-indigo-950/70 border border-cyan-800/50 rounded-3xl p-6 space-y-4 shadow-xl">
+            <div className="flex items-start gap-3">
+              <div className="p-2.5 rounded-2xl bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 shrink-0 mt-0.5">
+                <ShieldCheck className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="font-extrabold text-base text-white flex items-center gap-2">
+                  Updating Blu-Vault Made Simple
+                </h3>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  Updating Blu-Vault is straightforward because all application data is stored in just two JSON files located in the <span className="font-mono text-cyan-300 font-bold bg-slate-950/80 px-2 py-0.5 rounded border border-cyan-900/50">/data</span> folder:
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs pt-1">
+              <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-indigo-900/40 space-y-1">
+                <div className="font-extrabold text-indigo-300 flex items-center gap-1.5 font-mono">
+                  <Server className="w-4 h-4 text-indigo-400" />
+                  1. bluvault-system.json
+                </div>
+                <p className="text-slate-400 text-[11px] leading-relaxed">
+                  Contains all user accounts, password hashes, permissions, and TMDB/API configurations.
+                </p>
+              </div>
+
+              <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-cyan-900/40 space-y-1">
+                <div className="font-extrabold text-cyan-300 flex items-center gap-1.5 font-mono">
+                  <Layers className="w-4 h-4 text-cyan-400" />
+                  2. bluvault-vault.json
+                </div>
+                <p className="text-slate-400 text-[11px] leading-relaxed">
+                  Contains your physical media library, TV seasons, loan tracking records, and wishlist.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-slate-950/90 border border-slate-800 space-y-2 text-xs">
+              <div className="font-extrabold text-white flex items-center gap-1.5">
+                <Check className="w-4 h-4 text-emerald-400" /> Safe Update Instructions
+              </div>
+              <ul className="text-slate-300 space-y-1 text-[11px] list-disc list-inside">
+                <li><strong className="text-white">Docker / Container Volume:</strong> Keep <code className="text-cyan-300 font-mono">/data</code> mapped to a persistent host directory. When pulling or deploying a new container image, your 2 DB files remain untouched.</li>
+                <li><strong className="text-white">Git / Source Code:</strong> Replace or update the application files without deleting or overwriting the <code className="text-cyan-300 font-mono">/data</code> folder.</li>
+                <li><strong className="text-white">Manual Backup:</strong> Download both DB files before performing an update for complete peace of mind!</li>
+              </ul>
+            </div>
+          </div>
         </div>
       )}
 
@@ -941,6 +1242,21 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, u
                 </p>
               </div>
             </div>
+
+            {powerStatusMessage && (
+              <div className="p-4 rounded-2xl bg-amber-950/80 border border-amber-700/80 text-amber-200 text-xs font-medium flex items-center justify-between gap-3 animate-fade-in">
+                <div className="flex items-center gap-2">
+                  <CheckCircle className="w-5 h-5 text-amber-400 shrink-0" />
+                  <span>{powerStatusMessage}</span>
+                </div>
+                <button
+                  onClick={() => setPowerStatusMessage(null)}
+                  className="px-3 py-1 rounded-lg bg-amber-900/60 hover:bg-amber-800 text-amber-100 text-[11px] font-bold"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
 
             {(!currentUser || currentUser.role === 'admin') ? (
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
@@ -1191,16 +1507,18 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, u
                   try {
                     const authUser = currentUser?.id || currentUser?.username || 'usr-1';
                     if (actionTarget === 'restart') {
-                      await restartSystem(authUser, resetPassword);
-                      setPowerStatusMessage('System restart initiated! Rebooting Blu-Vault service...');
+                      const res = await restartSystem(authUser, resetPassword);
+                      setPowerStatusMessage(res?.message || 'Blu-Vault service restart completed. Database state and caches refreshed.');
                       setResetStep('closed');
+                      setIsResetting(false);
                       setTimeout(() => {
                         window.location.reload();
-                      }, 2500);
+                      }, 1500);
                     } else if (actionTarget === 'poweroff') {
-                      await powerOffSystem(authUser, resetPassword);
-                      setPowerStatusMessage('System has been powered off. Service is offline.');
+                      const res = await powerOffSystem(authUser, resetPassword);
+                      setPowerStatusMessage(res?.message || 'Blu-Vault service is in standby mode.');
                       setResetStep('closed');
+                      setIsResetting(false);
                     } else if (actionTarget === 'reset') {
                       await resetSystemToDefault(authUser, resetPassword);
                       if (onSystemReset) {

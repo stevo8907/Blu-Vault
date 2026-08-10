@@ -37,7 +37,7 @@ import {
   Image as ImageIcon
 } from 'lucide-react';
 import { MediaItem, Season, Episode, User, PhysicalFormat, Condition } from '../types';
-import { fetchTMDBSeason, saveTVSeason, toggleEpisodeWatched, updateMediaItem } from '../lib/api';
+import { fetchTMDBSeason, saveTVSeason, toggleEpisodeWatched, updateMediaItem, fetchCollectarrItemStack, addMissingCollectarrItem } from '../lib/api';
 import { SeasonSegmenterModal } from './SeasonSegmenterModal';
 import { UK_RETAILERS, getSavedShelfLocations, saveShelfLocation } from '../lib/shelfAndRetailer';
 
@@ -65,6 +65,7 @@ interface MediaDetailModalProps {
   onToggleWishlist?: (id: string) => void;
   onItemUpdated?: (item: MediaItem) => void;
   onRefreshItem?: () => void;
+  onOpenAddMedia?: (initialQuery?: string) => void;
 }
 
 export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
@@ -78,7 +79,8 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
   onToggleFavorite,
   onToggleWishlist,
   onItemUpdated,
-  onRefreshItem
+  onRefreshItem,
+  onOpenAddMedia
 }) => {
   const [showLoanForm, setShowLoanForm] = useState(false);
   const [showTvLoanModal, setShowTvLoanModal] = useState(false);
@@ -91,6 +93,100 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
     setMediaItem(prev => ({ ...prev, isWishlist: !prev.isWishlist }));
     if (onToggleWishlist) {
       onToggleWishlist(mediaItem.id);
+    }
+  };
+
+  // Collectarr Franchise & Collection Stack State
+  const [collectarrStack, setCollectarrStack] = useState<{
+    hasCollection: boolean;
+    isLocalGroup?: boolean;
+    collectionInfo?: { id: number; name: string; overview?: string; posterUrl?: string; backdropUrl?: string };
+    parts?: Array<{
+      tmdbId: number;
+      title: string;
+      originalTitle?: string;
+      overview: string;
+      posterUrl: string;
+      backdropUrl: string;
+      releaseYear: number;
+      rating: number;
+      inVault: boolean;
+      inWishlist: boolean;
+      vaultItemId?: string;
+      format?: string;
+      shelfLocation?: string;
+      condition?: string;
+    }>;
+    totalParts?: number;
+    ownedParts?: number;
+    wishlistParts?: number;
+    completionPercent?: number;
+    message?: string;
+  } | null>(null);
+  const [isLoadingCollectarr, setIsLoadingCollectarr] = useState<boolean>(false);
+  const [collectarrActionId, setCollectarrActionId] = useState<string | null>(null);
+
+  const loadCollectarrStack = async (targetItem: MediaItem = mediaItem) => {
+    if (targetItem.type !== 'movie' && !(targetItem.type === 'anime' && targetItem.animeType === 'movie')) {
+      setCollectarrStack(null);
+      return;
+    }
+    setIsLoadingCollectarr(true);
+    try {
+      const res = await fetchCollectarrItemStack({
+        mediaItemId: targetItem.id,
+        tmdbId: targetItem.tmdbId,
+        title: targetItem.title
+      });
+      if (res && res.success) {
+        setCollectarrStack(res);
+      }
+    } catch (err) {
+      console.error('Failed loading Collectarr stack:', err);
+    } finally {
+      setIsLoadingCollectarr(false);
+    }
+  };
+
+  useEffect(() => {
+    loadCollectarrStack(mediaItem);
+  }, [mediaItem.id, mediaItem.tmdbId]);
+
+  const handleCollectarrQuickAdd = async (part: any, targetState: 'wishlist' | 'vault') => {
+    setCollectarrActionId(`${part.tmdbId}_${targetState}`);
+    try {
+      const res = await addMissingCollectarrItem({
+        title: part.title,
+        tmdbId: part.tmdbId,
+        releaseYear: part.releaseYear,
+        posterUrl: part.posterUrl,
+        backdropUrl: part.backdropUrl,
+        overview: part.overview,
+        rating: part.rating,
+        collectionInfo: collectarrStack?.collectionInfo,
+        targetState
+      });
+      if (res.success) {
+        if (onRefreshItem) onRefreshItem();
+        await loadCollectarrStack(mediaItem);
+      }
+    } catch (err) {
+      console.error('Collectarr quick add failed:', err);
+    } finally {
+      setCollectarrActionId(null);
+    }
+  };
+
+  const handleSelectVaultItemFromStack = async (vaultItemId: string) => {
+    try {
+      const res = await fetch(`/api/media/${vaultItemId}`);
+      const data = await res.json();
+      if (data.success && data.media) {
+        setMediaItem(data.media);
+        if (onItemUpdated) onItemUpdated(data.media);
+      }
+    } catch (err) {
+      console.error('Error opening vault item from Collectarr stack:', err);
     }
   };
 
@@ -587,6 +683,185 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
               </div>
             </div>
           </div>
+
+          {/* AUTOMATIC COLLECTARR FRANCHISE & COLLECTION STACK SECTION */}
+          {(mediaItem.type === 'movie' || (mediaItem.type === 'anime' && mediaItem.animeType === 'movie')) && (
+            <div className="bg-slate-950/80 rounded-2xl border border-indigo-500/30 p-4 sm:p-5 space-y-4 shadow-xl">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shrink-0">
+                    <Sparkles className="w-5 h-5 text-cyan-400 animate-pulse" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-base font-extrabold text-white">
+                        {collectarrStack?.collectionInfo?.name || 'Collectarr Franchise Stack'}
+                      </h3>
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-950 text-indigo-300 border border-indigo-800/60 uppercase">
+                        Collectarr
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400">
+                      {collectarrStack?.hasCollection
+                        ? collectarrStack.isLocalGroup
+                          ? 'Automated local vault franchise grouping'
+                          : 'Automated TMDB collection stack & vault ownership tracking'
+                        : 'Automatic multi-film franchise analysis'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {collectarrStack?.hasCollection && (
+                    <span className="px-3 py-1 rounded-xl text-xs font-mono font-bold bg-emerald-950/80 text-emerald-300 border border-emerald-700/80">
+                      {collectarrStack.ownedParts} / {collectarrStack.totalParts} Movies Owned ({collectarrStack.completionPercent}%)
+                    </span>
+                  )}
+                  <button
+                    onClick={() => loadCollectarrStack(mediaItem)}
+                    disabled={isLoadingCollectarr}
+                    className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-all cursor-pointer"
+                    title="Refresh Collectarr Stack"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${isLoadingCollectarr ? 'animate-spin text-cyan-400' : ''}`} />
+                  </button>
+                </div>
+              </div>
+
+              {isLoadingCollectarr ? (
+                <div className="p-6 text-center space-y-2 bg-slate-900/60 rounded-xl border border-slate-800/80">
+                  <RefreshCw className="w-6 h-6 text-cyan-400 animate-spin mx-auto" />
+                  <p className="text-xs text-slate-400 font-mono">Collectarr Stack Engine auto-matching TMDB collection entries...</p>
+                </div>
+              ) : collectarrStack?.hasCollection && collectarrStack.parts && collectarrStack.parts.length > 0 ? (
+                <div className="space-y-3">
+                  {/* Franchise Completion Progress Bar */}
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[11px] font-mono text-slate-400">
+                      <span>Franchise Vault Ownership</span>
+                      <span className="text-cyan-300 font-bold">{collectarrStack.completionPercent}% Complete</span>
+                    </div>
+                    <div className="w-full h-2 rounded-full bg-slate-900 border border-slate-800 overflow-hidden flex">
+                      <div
+                        className="bg-gradient-to-r from-emerald-500 to-teal-400 h-full transition-all duration-500"
+                        style={{ width: `${collectarrStack.completionPercent}%` }}
+                      />
+                      {collectarrStack.wishlistParts ? (
+                        <div
+                          className="bg-purple-500 h-full transition-all duration-500 opacity-80"
+                          style={{ width: `${Math.round((collectarrStack.wishlistParts / collectarrStack.totalParts!) * 100)}%` }}
+                        />
+                      ) : null}
+                    </div>
+                  </div>
+
+                  {/* Stack Parts List */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 pt-1">
+                    {collectarrStack.parts.map((part: any, idx: number) => {
+                      const isCurrentViewing = part.vaultItemId === mediaItem.id || (part.tmdbId && part.tmdbId === mediaItem.tmdbId);
+
+                      return (
+                        <div
+                          key={part.tmdbId || idx}
+                          className={`p-3 rounded-2xl border transition-all flex flex-col justify-between space-y-2.5 ${
+                            isCurrentViewing
+                              ? 'bg-gradient-to-b from-indigo-950/80 to-slate-900 border-cyan-400/80 ring-1 ring-cyan-500/40 shadow-lg shadow-cyan-950/50'
+                              : part.inVault
+                                ? 'bg-slate-900/90 border-emerald-900/50 hover:border-emerald-600/60'
+                                : part.inWishlist
+                                  ? 'bg-slate-900/90 border-purple-900/50 hover:border-purple-600/60'
+                                  : 'bg-slate-950/90 border-slate-800 hover:border-slate-700'
+                          }`}
+                        >
+                          <div className="flex items-start gap-2.5">
+                            <div className="relative shrink-0">
+                              <img
+                                src={part.posterUrl || 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=500&auto=format&fit=crop&q=80'}
+                                alt={part.title}
+                                className="w-14 h-20 object-cover rounded-xl border border-slate-700/80 shadow-md bg-slate-950"
+                              />
+                              <span className="absolute -top-1.5 -left-1.5 px-1.5 py-0.5 rounded-md bg-slate-950/90 text-cyan-300 font-mono text-[9px] font-bold border border-slate-800">
+                                #{idx + 1}
+                              </span>
+                            </div>
+
+                            <div className="space-y-1 min-w-0 flex-1">
+                              <h5 className="text-xs font-black text-white truncate leading-tight" title={part.title}>
+                                {part.title}
+                              </h5>
+                              <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono">
+                                <span>{part.releaseYear}</span>
+                                {part.rating && (
+                                  <span className="text-amber-400 font-bold flex items-center gap-0.5">
+                                    <Star className="w-2.5 h-2.5 fill-amber-400" /> {part.rating}
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Status Pill */}
+                              <div>
+                                {isCurrentViewing ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-400/40">
+                                    <CheckCircle2 className="w-3 h-3 text-cyan-400" /> Active View
+                                  </span>
+                                ) : part.inVault ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                                    <Check className="w-3 h-3 text-emerald-400" /> {part.format || 'In Vault'}
+                                  </span>
+                                ) : part.inWishlist ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                                    <BookmarkCheck className="w-3 h-3 text-purple-400" /> Wishlist
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-slate-800 text-slate-400 border border-slate-700">
+                                    Missing
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Actions */}
+                          <div className="pt-1 border-t border-slate-800/80">
+                            {isCurrentViewing ? (
+                              <div className="text-[10px] text-cyan-300 font-mono text-center font-bold">
+                                Viewing this physical copy
+                              </div>
+                            ) : part.inVault && part.vaultItemId ? (
+                              <button
+                                onClick={() => handleSelectVaultItemFromStack(part.vaultItemId!)}
+                                className="w-full py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition-all flex items-center justify-center gap-1 border border-slate-700 cursor-pointer"
+                              >
+                                <span>Open Vault Copy</span>
+                                <ExternalLink className="w-3 h-3 text-cyan-400" />
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => {
+                                  if (onOpenAddMedia) {
+                                    onOpenAddMedia(part.title);
+                                  }
+                                }}
+                                className="w-full py-1.5 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-md shadow-blue-900/30 cursor-pointer"
+                              >
+                                <Plus className="w-3.5 h-3.5 text-white" />
+                                <span>Add Movie</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 text-xs text-slate-400 flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-cyan-400 shrink-0" />
+                  <span><strong>Collectarr Intelligence Verified:</strong> Standalone release. No multi-film TMDB collection stack detected for this title.</span>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* TV SHOW / ANIME SERIES SEASONS & EPISODES EXPLORER */}
           {(mediaItem.type === 'tv' || (mediaItem.type === 'anime' && (mediaItem.animeType === 'tv' || (mediaItem.numberOfSeasons && mediaItem.numberOfSeasons > 0) || (mediaItem.seasons && mediaItem.seasons.length > 0)))) && (

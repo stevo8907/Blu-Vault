@@ -24,9 +24,10 @@ import {
   FolderUp,
   HardDrive,
   Users,
-  Film
+  Film,
+  Folder
 } from 'lucide-react';
-import { submitOobeSetup, saveApiConfigs, testApiConfig, importVaultBackup, saveAutoBackupConfig } from '../lib/api';
+import { submitOobeSetup, saveApiConfigs, testApiConfig, importVaultBackup, saveAutoBackupConfig, getSavedConfigDirPath, saveSystemConfigPath } from '../lib/api';
 import { 
   LOCATION_OPTIONS, 
   CURRENCY_OPTIONS, 
@@ -66,10 +67,11 @@ export const OobeSetupView: React.FC<OobeSetupViewProps> = ({ onCompleteOobe }) 
   const [isTestingKey, setIsTestingKey] = useState(false);
   const [keyTestStatus, setKeyTestStatus] = useState<{ success: boolean; message: string } | null>(null);
 
-  // Step 3 State: Location & Currency & Automated Backup
+  // Step 3 State: Location & Currency & Automated Backup & Docker Config Path
   const [selectedLocation, setSelectedLocation] = useState(getSavedLocationCode());
   const [selectedCurrency, setSelectedCurrency] = useState(getSavedCurrencyCode());
   const [enableAutoBackup, setEnableAutoBackup] = useState(false);
+  const [configDirPath, setConfigDirPath] = useState(getSavedConfigDirPath());
 
   // Final completion state for clean setup
   const [isFinishing, setIsFinishing] = useState(false);
@@ -261,6 +263,7 @@ export const OobeSetupView: React.FC<OobeSetupViewProps> = ({ onCompleteOobe }) 
   const saveRegionSettings = () => {
     setSavedLocationCode(selectedLocation);
     setSavedCurrencyCode(selectedCurrency);
+    saveSystemConfigPath(configDirPath).catch(() => {});
     saveAutoBackupConfig({ enabled: enableAutoBackup }).catch(() => {});
   };
 
@@ -907,7 +910,7 @@ export const OobeSetupView: React.FC<OobeSetupViewProps> = ({ onCompleteOobe }) 
                                 </span>
                               </h4>
                               <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-                                Automatically store daily snapshots of your media database in <code className="text-cyan-300 font-mono">/data/backups/</code> with auto-retention cleanup.
+                                Automatically store daily snapshots of your media database in your runtime configuration directory with auto-retention cleanup.
                               </p>
                             </div>
 
@@ -923,6 +926,41 @@ export const OobeSetupView: React.FC<OobeSetupViewProps> = ({ onCompleteOobe }) 
                               <span className={`w-2.5 h-2.5 rounded-full ${enableAutoBackup ? 'bg-emerald-300 animate-pulse' : 'bg-slate-500'}`} />
                               <span>{enableAutoBackup ? 'Daily Backups Enabled' : 'Disabled (Manual Only)'}</span>
                             </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Container / Docker Software Configuration Directory Path */}
+                      <div className="space-y-2 pt-3 border-t border-slate-800">
+                        <label className="text-xs font-extrabold text-slate-200 uppercase tracking-wide flex items-center gap-2">
+                          <Folder className="w-4 h-4 text-purple-400" /> 4. Container Configuration & Storage Path
+                        </label>
+                        <div className="bg-slate-950/80 border border-slate-800 p-4 rounded-2xl space-y-3">
+                          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                            <div className="space-y-1 max-w-md">
+                              <h4 className="text-xs font-extrabold text-white flex items-center gap-2">
+                                <span>Docker Software Config Directory</span>
+                                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-purple-950 text-purple-300 border border-purple-800">
+                                  Container Volume
+                                </span>
+                              </h4>
+                              <p className="text-[11px] text-slate-400 leading-relaxed">
+                                State where the software configuration, runtime keys, and database persistent files will be running in your container environment (e.g., <code className="text-purple-300 font-mono">/config</code> or <code className="text-purple-300 font-mono">/data</code>).
+                              </p>
+                            </div>
+
+                            <div className="w-full sm:w-64 shrink-0">
+                              <div className="relative">
+                                <Folder className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-purple-400" />
+                                <input
+                                  type="text"
+                                  value={configDirPath}
+                                  onChange={(e) => setConfigDirPath(e.target.value)}
+                                  placeholder="/config"
+                                  className="w-full bg-slate-900 border border-slate-700 focus:border-purple-500 rounded-xl pl-9 pr-3 py-2 text-xs text-white font-mono placeholder-slate-500 focus:outline-none"
+                                />
+                              </div>
+                            </div>
                           </div>
                         </div>
                       </div>

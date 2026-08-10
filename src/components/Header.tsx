@@ -24,6 +24,7 @@ interface HeaderProps {
   onSearchChange: (q: string) => void;
   currentUser: User | null;
   onOpenUserSettings?: () => void;
+  onOpenSettings?: () => void;
   onOpenAddMedia: () => void;
   onOpenBarcodeScanner?: () => void;
   onLogout?: () => void;
@@ -38,6 +39,7 @@ export const Header: React.FC<HeaderProps> = ({
   onSearchChange,
   currentUser,
   onOpenUserSettings,
+  onOpenSettings,
   onOpenAddMedia,
   onOpenBarcodeScanner,
   onLogout,
@@ -163,11 +165,11 @@ export const Header: React.FC<HeaderProps> = ({
               {/* Menu Actions Group */}
               <div className="py-1 space-y-0.5">
                 
-                {/* User Settings Option */}
+                {/* System Settings Option */}
                 <button
                   onClick={() => {
                     setIsDropdownOpen(false);
-                    if (onOpenUserSettings) onOpenUserSettings();
+                    if (onOpenSettings) onOpenSettings();
                   }}
                   className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-slate-800 text-slate-200 text-xs font-medium text-left transition-colors group"
                 >
@@ -175,8 +177,25 @@ export const Header: React.FC<HeaderProps> = ({
                     <Settings className="w-4 h-4" />
                   </div>
                   <div>
-                    <p className="font-bold text-white group-hover:text-cyan-300 transition-colors">User Settings</p>
-                    <p className="text-[10px] text-slate-400">Profile, password & preferences</p>
+                    <p className="font-bold text-white group-hover:text-cyan-300 transition-colors">Settings</p>
+                    <p className="text-[10px] text-slate-400">API keys, TMDB & system controls</p>
+                  </div>
+                </button>
+
+                {/* User Profile Option */}
+                <button
+                  onClick={() => {
+                    setIsDropdownOpen(false);
+                    if (onOpenUserSettings) onOpenUserSettings();
+                  }}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-slate-800 text-slate-200 text-xs font-medium text-left transition-colors group"
+                >
+                  <div className="p-1.5 rounded-lg bg-indigo-950/80 border border-indigo-800/50 text-indigo-400 group-hover:bg-indigo-900/80 transition-colors">
+                    <UserIcon className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <p className="font-bold text-white group-hover:text-indigo-300 transition-colors">User Profile</p>
+                    <p className="text-[10px] text-slate-400">Password, avatar & account details</p>
                   </div>
                 </button>
 

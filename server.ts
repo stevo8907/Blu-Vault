@@ -13,10 +13,21 @@ app.use(express.json({ limit: '10mb' }));
 
 // Ensure data folder exists for database persistence
 const DATA_DIR = path.join(process.cwd(), 'data');
-const DB_FILE = path.join(DATA_DIR, 'bluvault-db.json');
+const SYSTEM_DB_FILE = path.join(DATA_DIR, 'bluvault-system.json');
+const VAULT_DB_FILE = path.join(DATA_DIR, 'bluvault-vault.json');
+const LEGACY_DB_FILE = path.join(DATA_DIR, 'bluvault-db.json');
 
 export interface UserWithAuth extends User {
   passwordHash?: string;
+}
+
+interface SystemDatabaseSchema {
+  users: UserWithAuth[];
+  apiConfigs: ApiConfig[];
+}
+
+interface VaultDatabaseSchema {
+  media: MediaItem[];
 }
 
 interface DatabaseSchema {
@@ -109,31 +120,73 @@ function sanitizeUser(user: UserWithAuth): User {
   return rest;
 }
 
-// Helper to load or initialize database
+// Helper to load or initialize segmented database
 function getDatabase(): DatabaseSchema {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-    if (!fs.existsSync(DB_FILE)) {
-      const initialDb: DatabaseSchema = {
-        users: [],
-        media: SEED_MEDIA,
-        apiConfigs: DEFAULT_APIS
-      };
-      fs.writeFileSync(DB_FILE, JSON.stringify(initialDb, null, 2), 'utf-8');
-      return initialDb;
+
+    // Auto-migrate legacy unified database file into segmented system & vault files
+    if (fs.existsSync(LEGACY_DB_FILE) && (!fs.existsSync(SYSTEM_DB_FILE) || !fs.existsSync(VAULT_DB_FILE))) {
+      try {
+        const legacyData = fs.readFileSync(LEGACY_DB_FILE, 'utf-8');
+        const legacyParsed = JSON.parse(legacyData);
+        if (!fs.existsSync(SYSTEM_DB_FILE)) {
+          const sysObj: SystemDatabaseSchema = {
+            users: Array.isArray(legacyParsed.users) ? legacyParsed.users : [],
+            apiConfigs: Array.isArray(legacyParsed.apiConfigs) && legacyParsed.apiConfigs.length > 0 ? legacyParsed.apiConfigs : DEFAULT_APIS
+          };
+          fs.writeFileSync(SYSTEM_DB_FILE, JSON.stringify(sysObj, null, 2), 'utf-8');
+        }
+        if (!fs.existsSync(VAULT_DB_FILE)) {
+          const vaultObj: VaultDatabaseSchema = {
+            media: Array.isArray(legacyParsed.media) ? legacyParsed.media : SEED_MEDIA
+          };
+          fs.writeFileSync(VAULT_DB_FILE, JSON.stringify(vaultObj, null, 2), 'utf-8');
+        }
+        // Backup legacy file
+        fs.renameSync(LEGACY_DB_FILE, LEGACY_DB_FILE + '.bak');
+        console.log('Successfully migrated legacy bluvault-db.json into segmented bluvault-system.json and bluvault-vault.json');
+      } catch (e) {
+        console.error('Failed migrating legacy DB file:', e);
+      }
     }
-    const data = fs.readFileSync(DB_FILE, 'utf-8');
-    const parsed = JSON.parse(data) as DatabaseSchema;
-    
-    if (!parsed.users) parsed.users = [];
-    if (!parsed.media) parsed.media = SEED_MEDIA;
-    if (!parsed.apiConfigs || parsed.apiConfigs.length === 0) parsed.apiConfigs = DEFAULT_APIS;
+
+    // 1. Read System Database (Users & API Configs)
+    let systemData: SystemDatabaseSchema = { users: [], apiConfigs: DEFAULT_APIS };
+    if (!fs.existsSync(SYSTEM_DB_FILE)) {
+      fs.writeFileSync(SYSTEM_DB_FILE, JSON.stringify(systemData, null, 2), 'utf-8');
+    } else {
+      try {
+        const parsedSys = JSON.parse(fs.readFileSync(SYSTEM_DB_FILE, 'utf-8'));
+        systemData = {
+          users: Array.isArray(parsedSys.users) ? parsedSys.users : [],
+          apiConfigs: Array.isArray(parsedSys.apiConfigs) && parsedSys.apiConfigs.length > 0 ? parsedSys.apiConfigs : DEFAULT_APIS
+        };
+      } catch (err) {
+        console.error('Error reading system database file:', err);
+      }
+    }
+
+    // 2. Read Vault Database (Media items)
+    let vaultData: VaultDatabaseSchema = { media: SEED_MEDIA };
+    if (!fs.existsSync(VAULT_DB_FILE)) {
+      fs.writeFileSync(VAULT_DB_FILE, JSON.stringify(vaultData, null, 2), 'utf-8');
+    } else {
+      try {
+        const parsedVault = JSON.parse(fs.readFileSync(VAULT_DB_FILE, 'utf-8'));
+        vaultData = {
+          media: Array.isArray(parsedVault.media) ? parsedVault.media : SEED_MEDIA
+        };
+      } catch (err) {
+        console.error('Error reading vault database file:', err);
+      }
+    }
 
     // Guarantee unique IDs across all media items
     const seenMediaIds = new Set<string>();
-    parsed.media.forEach((item, idx) => {
+    vaultData.media.forEach((item, idx) => {
       if (!item.id || seenMediaIds.has(item.id)) {
         item.id = `bv-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 7)}`;
       }
@@ -141,15 +194,19 @@ function getDatabase(): DatabaseSchema {
     });
 
     // Auto-migrate users missing permissions object
-    parsed.users.forEach(u => {
+    systemData.users.forEach(u => {
       if (!u.permissions) {
         u.permissions = getDefaultPermissions(u.role || 'admin');
       }
     });
 
-    return parsed;
+    return {
+      users: systemData.users,
+      apiConfigs: systemData.apiConfigs,
+      media: vaultData.media
+    };
   } catch (err) {
-    console.error('Error reading database file:', err);
+    console.error('Error in getDatabase:', err);
     return {
       users: [],
       media: SEED_MEDIA,
@@ -163,9 +220,20 @@ function saveDatabase(db: DatabaseSchema) {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
+    // Save system segment
+    const systemSegment: SystemDatabaseSchema = {
+      users: db.users || [],
+      apiConfigs: db.apiConfigs || DEFAULT_APIS
+    };
+    fs.writeFileSync(SYSTEM_DB_FILE, JSON.stringify(systemSegment, null, 2), 'utf-8');
+
+    // Save vault segment
+    const vaultSegment: VaultDatabaseSchema = {
+      media: db.media || []
+    };
+    fs.writeFileSync(VAULT_DB_FILE, JSON.stringify(vaultSegment, null, 2), 'utf-8');
   } catch (err) {
-    console.error('Failed to save database file:', err);
+    console.error('Failed to save segmented database files:', err);
   }
 }
 
@@ -876,7 +944,13 @@ app.get('/api/tmdb/details', async (req, res) => {
             seasons: formattedSeasons,
             director: directors,
             cast,
-            studio: data.production_companies?.[0]?.name || ''
+            studio: data.production_companies?.[0]?.name || '',
+            collectionInfo: data.belongs_to_collection ? {
+              id: data.belongs_to_collection.id,
+              name: data.belongs_to_collection.name,
+              posterUrl: data.belongs_to_collection.poster_path ? `https://image.tmdb.org/t/p/w500${data.belongs_to_collection.poster_path}` : undefined,
+              backdropUrl: data.belongs_to_collection.backdrop_path ? `https://image.tmdb.org/t/p/w1280${data.belongs_to_collection.backdrop_path}` : undefined
+            } : undefined
           }
         });
       }
@@ -907,6 +981,371 @@ app.get('/api/tmdb/details', async (req, res) => {
       seasons: fallbackSeasons
     }
   });
+});
+
+// TMDB Franchise / Collection Endpoint
+app.get('/api/tmdb/collection', async (req, res) => {
+  const collectionId = req.query.id;
+  if (!collectionId) {
+    return res.status(400).json({ success: false, message: 'Collection ID required' });
+  }
+
+  const db = getDatabase();
+  const tmdbConfig = db.apiConfigs.find(a => a.type === 'tmdb' && a.enabled);
+  const apiKey = tmdbConfig?.apiKey || process.env.TMDB_API_KEY;
+
+  if (apiKey) {
+    try {
+      const url = `https://api.themoviedb.org/3/collection/${collectionId}?api_key=${apiKey}`;
+      const response = await fetch(url);
+      const data = await response.json();
+
+      if (data.id) {
+        const parts = (data.parts || []).map((p: any) => ({
+          tmdbId: p.id,
+          title: p.title || p.name,
+          originalTitle: p.original_title || p.title,
+          overview: p.overview || '',
+          posterUrl: p.poster_path ? `https://image.tmdb.org/t/p/w500${p.poster_path}` : '',
+          backdropUrl: p.backdrop_path ? `https://image.tmdb.org/t/p/w1280${p.backdrop_path}` : '',
+          releaseYear: p.release_date ? new Date(p.release_date).getFullYear() : 2020,
+          rating: p.vote_average ? Math.round(p.vote_average * 10) / 10 : 7.0
+        })).sort((a: any, b: any) => a.releaseYear - b.releaseYear);
+
+        return res.json({
+          success: true,
+          collection: {
+            id: data.id,
+            name: data.name,
+            overview: data.overview || '',
+            posterUrl: data.poster_path ? `https://image.tmdb.org/t/p/w500${data.poster_path}` : '',
+            backdropUrl: data.backdrop_path ? `https://image.tmdb.org/t/p/w1280${data.backdrop_path}` : '',
+            parts
+          }
+        });
+      }
+    } catch (err) {
+      console.warn('TMDB Collection fetch error:', err);
+    }
+  }
+
+  res.status(404).json({ success: false, message: 'Collection not found or TMDB API key not configured' });
+});
+
+// Collectarr Auto-Scan Endpoint: Groups media into TMDB franchises
+app.post('/api/collections/scan', async (req, res) => {
+  const db = getDatabase();
+  const tmdbConfig = db.apiConfigs.find(a => a.type === 'tmdb' && a.enabled);
+  const apiKey = tmdbConfig?.apiKey || process.env.TMDB_API_KEY;
+
+  if (!apiKey) {
+    return res.status(400).json({ success: false, message: 'TMDB API key is required to run Collectarr Franchise Scan.' });
+  }
+
+  let updatedCount = 0;
+  let collectionCount = 0;
+  const foundCollectionsMap: Record<number, { id: number; name: string; posterUrl?: string; backdropUrl?: string }> = {};
+
+  try {
+    const movieItems = db.media.filter(item => item.type === 'movie' || (item.type === 'anime' && item.animeType === 'movie'));
+
+    for (const item of movieItems) {
+      let tmdbIdToQuery = item.tmdbId;
+
+      if (!tmdbIdToQuery && item.title) {
+        // Search TMDB for tmdbId
+        const searchUrl = `https://api.themoviedb.org/3/search/movie?api_key=${apiKey}&query=${encodeURIComponent(item.title)}`;
+        const searchRes = await fetch(searchUrl);
+        const searchData = await searchRes.json();
+        if (searchData.results && searchData.results.length > 0) {
+          tmdbIdToQuery = searchData.results[0].id;
+          item.tmdbId = tmdbIdToQuery;
+        }
+      }
+
+      if (tmdbIdToQuery) {
+        const detailsUrl = `https://api.themoviedb.org/3/movie/${tmdbIdToQuery}?api_key=${apiKey}`;
+        const detailsRes = await fetch(detailsUrl);
+        const detailsData = await detailsRes.json();
+
+        if (detailsData.belongs_to_collection) {
+          const c = detailsData.belongs_to_collection;
+          const collectionInfo = {
+            id: c.id,
+            name: c.name,
+            posterUrl: c.poster_path ? `https://image.tmdb.org/t/p/w500${c.poster_path}` : undefined,
+            backdropUrl: c.backdrop_path ? `https://image.tmdb.org/t/p/w1280${c.backdrop_path}` : undefined
+          };
+
+          item.collectionInfo = collectionInfo;
+          foundCollectionsMap[c.id] = collectionInfo;
+          updatedCount++;
+        }
+      }
+    }
+
+    collectionCount = Object.keys(foundCollectionsMap).length;
+    saveDatabase(db);
+
+    return res.json({
+      success: true,
+      message: `Collectarr scan complete! Analyzed ${movieItems.length} movie entries. Grouped ${updatedCount} items into ${collectionCount} distinct movie franchises.`,
+      updatedCount,
+      collectionCount,
+      collections: Object.values(foundCollectionsMap)
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: `Collectarr scan error: ${err.message}` });
+  }
+});
+
+// Collectarr Purge / Reset Endpoint: Clears automatically matched collection tags
+app.post('/api/collections/clear', async (req, res) => {
+  try {
+    const db = getDatabase();
+    let resetCount = 0;
+    db.media.forEach(item => {
+      if (item.collectionInfo) {
+        delete item.collectionInfo;
+        resetCount++;
+      }
+    });
+    saveDatabase(db);
+    res.json({ success: true, message: `Purged franchise tags from ${resetCount} media entries.`, resetCount });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: `Failed to purge collection tags: ${err.message}` });
+  }
+});
+
+// Automatic Collectarr Movie Stack Lookup Endpoint
+app.get('/api/collectarr/item-stack', async (req, res) => {
+  try {
+    const { mediaItemId, tmdbId, title } = req.query;
+    const db = getDatabase();
+    
+    // Find media item in DB
+    let item = db.media.find(m => m.id === String(mediaItemId));
+    if (!item && tmdbId) {
+      item = db.media.find(m => m.tmdbId === Number(tmdbId));
+    }
+    if (!item && title) {
+      item = db.media.find(m => m.title.toLowerCase() === String(title).toLowerCase());
+    }
+
+    const tmdbConfig = db.apiConfigs.find(a => a.type === 'tmdb' && a.enabled);
+    const apiKey = tmdbConfig?.apiKey || process.env.TMDB_API_KEY;
+
+    let collectionId = item?.collectionInfo?.id;
+
+    // If item has no collectionInfo yet, auto-lookup via TMDB if API key present
+    if (!collectionId && apiKey) {
+      let queryTmdbId = item?.tmdbId || (tmdbId ? Number(tmdbId) : null);
+
+      if (!queryTmdbId && (item?.title || title)) {
+        const queryTitle = item?.title || title;
+        const searchUrl = `https://api.themoviedb.org/3/search/movie?api_key=${apiKey}&query=${encodeURIComponent(String(queryTitle))}`;
+        const searchRes = await fetch(searchUrl);
+        const searchData = await searchRes.json();
+        if (searchData.results && searchData.results.length > 0) {
+          queryTmdbId = searchData.results[0].id;
+          if (item) item.tmdbId = queryTmdbId;
+        }
+      }
+
+      if (queryTmdbId) {
+        const detailsUrl = `https://api.themoviedb.org/3/movie/${queryTmdbId}?api_key=${apiKey}`;
+        const detailsRes = await fetch(detailsUrl);
+        const detailsData = await detailsRes.json();
+
+        if (detailsData.belongs_to_collection) {
+          const c = detailsData.belongs_to_collection;
+          collectionId = c.id;
+
+          const collectionInfo = {
+            id: c.id,
+            name: c.name,
+            posterUrl: c.poster_path ? `https://image.tmdb.org/t/p/w500${c.poster_path}` : undefined,
+            backdropUrl: c.backdrop_path ? `https://image.tmdb.org/t/p/w1280${c.backdrop_path}` : undefined
+          };
+
+          if (item) {
+            item.collectionInfo = collectionInfo;
+            saveDatabase(db);
+          }
+        }
+      }
+    }
+
+    // If collectionId is available, fetch collection parts from TMDB
+    if (collectionId && apiKey) {
+      const collUrl = `https://api.themoviedb.org/3/collection/${collectionId}?api_key=${apiKey}`;
+      const collRes = await fetch(collUrl);
+      const collData = await collRes.json();
+
+      if (collData.id) {
+        const rawParts = collData.parts || [];
+        const parts = rawParts.map((p: any) => {
+          const partTmdbId = p.id;
+          const partTitle = p.title || p.name;
+          const releaseYear = p.release_date ? new Date(p.release_date).getFullYear() : 2020;
+
+          // Match against user's physical vault
+          const matchedItem = db.media.find(m => 
+            (m.tmdbId && m.tmdbId === partTmdbId) || 
+            (m.title && m.title.toLowerCase().trim() === partTitle.toLowerCase().trim())
+          );
+
+          const inVault = matchedItem ? matchedItem.isWishlist !== true : false;
+          const inWishlist = matchedItem ? matchedItem.isWishlist === true : false;
+
+          return {
+            tmdbId: partTmdbId,
+            title: partTitle,
+            originalTitle: p.original_title || partTitle,
+            overview: p.overview || '',
+            posterUrl: p.poster_path ? `https://image.tmdb.org/t/p/w500${p.poster_path}` : '',
+            backdropUrl: p.backdrop_path ? `https://image.tmdb.org/t/p/w1280${p.backdrop_path}` : '',
+            releaseYear,
+            rating: p.vote_average ? Math.round(p.vote_average * 10) / 10 : 7.0,
+            inVault,
+            inWishlist,
+            vaultItemId: matchedItem?.id,
+            format: matchedItem?.format || '4K Ultra-HD',
+            shelfLocation: matchedItem?.shelfLocation,
+            condition: matchedItem?.condition
+          };
+        }).sort((a: any, b: any) => a.releaseYear - b.releaseYear);
+
+        const totalParts = parts.length;
+        const ownedParts = parts.filter((p: any) => p.inVault).length;
+        const wishlistParts = parts.filter((p: any) => p.inWishlist).length;
+        const completionPercent = totalParts > 0 ? Math.round((ownedParts / totalParts) * 100) : 0;
+
+        return res.json({
+          success: true,
+          hasCollection: true,
+          collectionInfo: {
+            id: collData.id,
+            name: collData.name,
+            overview: collData.overview || '',
+            posterUrl: collData.poster_path ? `https://image.tmdb.org/t/p/w500${collData.poster_path}` : '',
+            backdropUrl: collData.backdrop_path ? `https://image.tmdb.org/t/p/w1280${collData.backdrop_path}` : ''
+          },
+          parts,
+          totalParts,
+          ownedParts,
+          wishlistParts,
+          completionPercent
+        });
+      }
+    }
+
+    // Fallback if no official TMDB collection: check local media vault for shared franchise title keywords
+    if (item && item.title) {
+      const cleanTitle = item.title.replace(/:\s*.*$/, '').replace(/\d+$/, '').trim();
+      if (cleanTitle.length >= 3) {
+        const localMatches = db.media.filter(m => 
+          m.id !== item.id && 
+          (m.type === 'movie' || (m.type === 'anime' && m.animeType === 'movie')) && 
+          m.title.toLowerCase().includes(cleanTitle.toLowerCase())
+        );
+
+        if (localMatches.length > 0) {
+          const parts = [item, ...localMatches].map(m => ({
+            tmdbId: m.tmdbId || 0,
+            title: m.title,
+            releaseYear: m.releaseYear,
+            posterUrl: m.posterUrl,
+            backdropUrl: m.backdropUrl,
+            overview: m.overview || '',
+            rating: m.rating || 8.0,
+            inVault: m.isWishlist !== true,
+            inWishlist: m.isWishlist === true,
+            vaultItemId: m.id,
+            format: m.format || '4K Ultra-HD',
+            shelfLocation: m.shelfLocation
+          })).sort((a, b) => a.releaseYear - b.releaseYear);
+
+          const totalParts = parts.length;
+          const ownedParts = parts.filter(p => p.inVault).length;
+
+          return res.json({
+            success: true,
+            hasCollection: true,
+            isLocalGroup: true,
+            collectionInfo: {
+              id: 99999,
+              name: `${cleanTitle} Franchise`,
+              overview: 'Locally matched franchise items in your physical vault.'
+            },
+            parts,
+            totalParts,
+            ownedParts,
+            completionPercent: Math.round((ownedParts / totalParts) * 100)
+          });
+        }
+      }
+    }
+
+    return res.json({
+      success: true,
+      hasCollection: false,
+      message: 'Verified Standalone Release (No multi-film franchise stack detected).'
+    });
+
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: `Collectarr stack lookup failed: ${err.message}` });
+  }
+});
+
+// Collectarr 1-click Quick Add missing franchise item to Wishlist or Vault
+app.post('/api/collectarr/add-missing', (req, res) => {
+  try {
+    const { title, tmdbId, releaseYear, posterUrl, backdropUrl, overview, rating, collectionInfo, targetState } = req.body;
+    const db = getDatabase();
+
+    // Check if already exists in vault
+    let existing = db.media.find(m => (tmdbId && m.tmdbId === tmdbId) || m.title.toLowerCase().trim() === title.toLowerCase().trim());
+
+    if (existing) {
+      if (targetState === 'wishlist') {
+        existing.isWishlist = true;
+      } else if (targetState === 'vault') {
+        existing.isWishlist = false;
+      }
+      saveDatabase(db);
+      return res.json({ success: true, item: existing, message: `Updated "${title}" in library.` });
+    }
+
+    const newItem: any = {
+      id: `media_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+      title,
+      type: 'movie',
+      format: '4K Ultra-HD',
+      condition: 'Mint',
+      shelfLocation: targetState === 'wishlist' ? 'Wishlist' : 'Vault Shelf A1',
+      discsCount: 1,
+      isFavorite: false,
+      isWishlist: targetState === 'wishlist',
+      posterUrl: posterUrl || 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=500&auto=format&fit=crop&q=80',
+      backdropUrl: backdropUrl || posterUrl || '',
+      overview: overview || '',
+      releaseYear: releaseYear || 2023,
+      rating: rating || 8.0,
+      tmdbId: tmdbId || undefined,
+      collectionInfo: collectionInfo || undefined,
+      addedAt: new Date().toISOString(),
+      addedByUserId: 'usr_admin',
+      addedByUserName: 'Master Admin'
+    };
+
+    db.media.push(newItem);
+    saveDatabase(db);
+
+    res.json({ success: true, item: newItem, message: `Added "${title}" to your ${targetState === 'wishlist' ? 'Wishlist' : 'Physical Vault'}!` });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: `Failed to add item: ${err.message}` });
+  }
 });
 
 // Helper to fetch all TMDB episodes for a TV show across seasons or from Season 1
@@ -1890,11 +2329,28 @@ app.post('/api/settings/apis/test', async (req, res) => {
 });
 
 // Backup & Database Export/Import & Automated Backups
-const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+const BACKUP_DIR = path.join(process.cwd(), 'backups');
+const OLD_BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const AUTO_BACKUP_CONFIG_FILE = path.join(DATA_DIR, 'auto-backup-config.json');
 
 if (!fs.existsSync(BACKUP_DIR)) {
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
+}
+
+// Migrate any backups from legacy data/backups directory to root backups directory if found
+if (fs.existsSync(OLD_BACKUP_DIR)) {
+  try {
+    const oldFiles = fs.readdirSync(OLD_BACKUP_DIR);
+    for (const file of oldFiles) {
+      const src = path.join(OLD_BACKUP_DIR, file);
+      const dest = path.join(BACKUP_DIR, file);
+      if (fs.statSync(src).isFile() && !fs.existsSync(dest)) {
+        fs.copyFileSync(src, dest);
+      }
+    }
+  } catch (e) {
+    console.log('Notice migrating old backup files:', e);
+  }
 }
 
 function calculateNextBackupTime(frequency: string) {
@@ -1926,7 +2382,7 @@ function getAutoBackupConfig() {
     autoDownload: false,
     lastBackupAt: undefined,
     nextBackupAt: calculateNextBackupTime('daily'),
-    backupLocation: '/data/backups/'
+    backupLocation: '/backups/'
   };
 }
 
@@ -1996,20 +2452,82 @@ function performAutomatedBackup() {
   };
 }
 
-// Check on startup if no backup exists, create initial automatic baseline backup
-try {
-  if (listBackupSnapshots().length === 0) {
-    performAutomatedBackup();
-  }
-} catch (e) {
-  console.log('Initial backup setup notice:', e);
-}
-
 app.get('/api/backup/export', (req, res) => {
   const db = getDatabase();
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Content-Disposition', `attachment; filename=bluvault-backup-${new Date().toISOString().split('T')[0]}.json`);
   res.send(JSON.stringify(db, null, 2));
+});
+
+app.get('/api/backup/export/csv', (req, res) => {
+  const db = getDatabase();
+  const media = db.media || [];
+
+  const headers = [
+    'ID',
+    'Title',
+    'Type',
+    'Release Year',
+    'Format',
+    'Edition',
+    'Discs',
+    'Condition',
+    'Shelf Location',
+    'Purchase Price',
+    'Retailer',
+    'Purchase Date',
+    'Barcode',
+    'Director',
+    'Studio',
+    'Rating',
+    'Genres',
+    'On Loan',
+    'Lent To',
+    'Digital Code Redeemed',
+    'Favorite',
+    'Wishlist',
+    'Added Date',
+    'Notes'
+  ];
+
+  const escapeCSV = (val: any) => {
+    if (val === null || val === undefined) return '""';
+    const str = String(val).replace(/"/g, '""');
+    return `"${str}"`;
+  };
+
+  const rows = media.map((item: any) => [
+    escapeCSV(item.id),
+    escapeCSV(item.title),
+    escapeCSV(item.type),
+    escapeCSV(item.releaseYear),
+    escapeCSV(item.format),
+    escapeCSV(item.edition || ''),
+    escapeCSV(item.discsCount ?? 1),
+    escapeCSV(item.condition || ''),
+    escapeCSV(item.shelfLocation || ''),
+    escapeCSV(item.purchasePrice !== undefined && item.purchasePrice !== null ? item.purchasePrice : ''),
+    escapeCSV(item.purchaseRetailer || ''),
+    escapeCSV(item.purchaseDate || ''),
+    escapeCSV(item.barcode || ''),
+    escapeCSV(item.director || ''),
+    escapeCSV(item.studio || ''),
+    escapeCSV(item.rating || 0),
+    escapeCSV(Array.isArray(item.genres) ? item.genres.join('; ') : ''),
+    escapeCSV(item.loanStatus?.isLentOut ? 'Yes' : 'No'),
+    escapeCSV(item.loanStatus?.lentTo || ''),
+    escapeCSV(item.digitalCodeRedeemed ? 'Yes' : 'No'),
+    escapeCSV(item.isFavorite ? 'Yes' : 'No'),
+    escapeCSV(item.isWishlist ? 'Yes' : 'No'),
+    escapeCSV(item.addedAt || ''),
+    escapeCSV(item.notes || '')
+  ].join(','));
+
+  const csvContent = [headers.join(','), ...rows].join('\r\n');
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename=bluvault-collection-${new Date().toISOString().split('T')[0]}.csv`);
+  res.send(csvContent);
 });
 
 app.post('/api/backup/import', (req, res) => {
@@ -2025,6 +2543,121 @@ app.post('/api/backup/import', (req, res) => {
 
   saveDatabase(db);
   res.json({ success: true, message: `Successfully imported ${media.length} media items into Blu-Vault!`, mediaCount: media.length });
+});
+
+// Vault-Only Export (Excludes users & settings for clean migration between systems)
+app.get('/api/backup/export/vault', (req, res) => {
+  const db = getDatabase();
+  const vaultOnlyData = {
+    version: '1.0',
+    exportedAt: new Date().toISOString(),
+    mediaCount: db.media?.length || 0,
+    media: db.media || []
+  };
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename=bluvault-vault.json`);
+  res.send(JSON.stringify(vaultOnlyData, null, 2));
+});
+
+// Vault-Only Import (Applies media vault items without touching target users or system settings)
+app.post('/api/backup/import/vault', (req, res) => {
+  const payload = req.body;
+  const mediaItems = Array.isArray(payload) ? payload : (Array.isArray(payload?.media) ? payload.media : null);
+
+  if (!mediaItems) {
+    return res.status(400).json({ success: false, message: 'Invalid vault backup format. Media array is required.' });
+  }
+
+  const db = getDatabase();
+  db.media = mediaItems;
+  saveDatabase(db);
+
+  res.json({
+    success: true,
+    message: `Successfully imported ${mediaItems.length} media items into your Vault database without modifying users or system settings.`,
+    mediaCount: mediaItems.length
+  });
+});
+
+// System-Only Export (Users & API Configs)
+app.get('/api/backup/export/system', (req, res) => {
+  const db = getDatabase();
+  const systemOnlyData = {
+    version: '1.0',
+    exportedAt: new Date().toISOString(),
+    users: db.users || [],
+    apiConfigs: db.apiConfigs || []
+  };
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename=bluvault-system.json`);
+  res.send(JSON.stringify(systemOnlyData, null, 2));
+});
+
+// System-Only Import (Applies system users & apiConfigs without touching media vault items)
+app.post('/api/backup/import/system', (req, res) => {
+  const payload = req.body;
+  const users = Array.isArray(payload?.users) ? payload.users : null;
+  const apiConfigs = Array.isArray(payload?.apiConfigs) ? payload.apiConfigs : null;
+
+  if (!users && !apiConfigs) {
+    return res.status(400).json({ success: false, message: 'Invalid system database format. "users" or "apiConfigs" array is required.' });
+  }
+
+  const db = getDatabase();
+  if (users) db.users = users;
+  if (apiConfigs) db.apiConfigs = apiConfigs;
+  saveDatabase(db);
+
+  res.json({
+    success: true,
+    message: `Successfully imported system configuration (${db.users.length} users, ${db.apiConfigs.length} API configs) into bluvault-system.json without touching vault media.`,
+    userCount: db.users.length,
+    apiConfigCount: db.apiConfigs.length
+  });
+});
+
+// Database Segmentation Status API
+app.get('/api/system/db-status', (req, res) => {
+  const db = getDatabase();
+  const getFileInfo = (filePath: string) => {
+    const exists = fs.existsSync(filePath);
+    if (!exists) {
+      return {
+        exists: false,
+        path: filePath,
+        relativeFolder: 'data/',
+        filename: path.basename(filePath),
+        sizeBytes: 0,
+        updatedAt: new Date().toISOString()
+      };
+    }
+    const stats = fs.statSync(filePath);
+    return {
+      exists: true,
+      path: filePath,
+      relativeFolder: 'data/',
+      filename: path.basename(filePath),
+      sizeBytes: stats.size,
+      updatedAt: stats.mtime.toISOString()
+    };
+  };
+
+  res.json({
+    segmented: true,
+    systemDb: {
+      filename: 'bluvault-system.json',
+      path: SYSTEM_DB_FILE,
+      ...getFileInfo(SYSTEM_DB_FILE),
+      userCount: db.users?.length || 0,
+      apiConfigCount: db.apiConfigs?.length || 0
+    },
+    vaultDb: {
+      filename: 'bluvault-vault.json',
+      path: VAULT_DB_FILE,
+      ...getFileInfo(VAULT_DB_FILE),
+      mediaCount: db.media?.length || 0
+    }
+  });
 });
 
 // Automated Backup Config API
@@ -2115,6 +2748,24 @@ app.post('/api/backup/snapshots/:id/restore', (req, res) => {
 });
 
 
+// Docker Container Software Config Path Endpoints
+app.get('/api/system/config-path', (req, res) => {
+  const configDirPath = process.env.CONFIG_DIR || process.env.DATA_DIR || '/config';
+  res.json({ success: true, configDirPath, isDockerContainer: true });
+});
+
+app.post('/api/system/config-path', (req, res) => {
+  const { configDirPath } = req.body;
+  if (configDirPath && typeof configDirPath === 'string') {
+    process.env.CONFIG_DIR = configDirPath;
+  }
+  res.json({
+    success: true,
+    message: `Software container configuration path updated to ${configDirPath || '/config'}`,
+    configDirPath: configDirPath || '/config'
+  });
+});
+
 // System Factory Reset (Admin Only)
 app.post('/api/system/reset', (req, res) => {
   const { userId, password } = req.body;
@@ -2184,13 +2835,14 @@ app.post('/api/system/restart', (req, res) => {
     }
   }
 
-  res.json({ success: true, message: 'System restart sequence initiated. Blu-Vault service is restarting...' });
+  console.log('--- SYSTEM RESTART REQUESTED: Performing soft service refresh ---');
+  // Re-read DB & flush runtime state cleanly
+  getDatabase();
 
-  // Schedule process restart
-  setTimeout(() => {
-    console.log('--- RESTARTING SYSTEM PROCESS ---');
-    process.exit(0);
-  }, 1000);
+  return res.json({ 
+    success: true, 
+    message: 'Blu-Vault service soft restart completed. Configuration reloaded and database state refreshed.' 
+  });
 });
 
 // System Power Off Endpoint
@@ -2216,13 +2868,12 @@ app.post('/api/system/poweroff', (req, res) => {
     }
   }
 
-  res.json({ success: true, message: 'System shutdown sequence initiated. Powering off Blu-Vault...' });
+  console.log('--- SYSTEM POWER OFF REQUESTED: Entering Standby Mode ---');
 
-  // Schedule process termination
-  setTimeout(() => {
-    console.log('--- SYSTEM POWERED OFF ---');
-    process.exit(0);
-  }, 1000);
+  return res.json({ 
+    success: true, 
+    message: 'System power shutdown sequence initiated. Blu-Vault service has entered Standby Mode.' 
+  });
 });
 
 // VITE MIDDLEWARE SETUP

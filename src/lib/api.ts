@@ -232,11 +232,50 @@ export async function exportVaultBackup(): Promise<void> {
   window.open('/api/backup/export', '_blank');
 }
 
+export async function exportVaultOnlyJSON(): Promise<void> {
+  window.open('/api/backup/export/vault', '_blank');
+}
+
+export async function exportSystemOnlyJSON(): Promise<void> {
+  window.open('/api/backup/export/system', '_blank');
+}
+
+export async function exportCollectionCSV(): Promise<void> {
+  window.open('/api/backup/export/csv', '_blank');
+}
+
+export async function fetchDatabaseStatus(): Promise<{
+  segmented: boolean;
+  systemDb: { filename: string; path: string; exists: boolean; sizeBytes: number; updatedAt: string; userCount: number; apiConfigCount: number };
+  vaultDb: { filename: string; path: string; exists: boolean; sizeBytes: number; updatedAt: string; mediaCount: number };
+}> {
+  const res = await fetch('/api/system/db-status');
+  return await res.json();
+}
+
 export async function importVaultBackup(jsonData: string): Promise<{ success: boolean; importedCount?: number; mediaCount?: number; message: string }> {
   const res = await fetch('/api/backup/import', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: jsonData
+    body: typeof jsonData === 'string' ? jsonData : JSON.stringify(jsonData)
+  });
+  return await res.json();
+}
+
+export async function importVaultOnlyJSON(jsonData: any): Promise<{ success: boolean; mediaCount?: number; message: string }> {
+  const res = await fetch('/api/backup/import/vault', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: typeof jsonData === 'string' ? jsonData : JSON.stringify(jsonData)
+  });
+  return await res.json();
+}
+
+export async function importSystemOnlyJSON(jsonData: any): Promise<{ success: boolean; userCount?: number; apiConfigCount?: number; message: string }> {
+  const res = await fetch('/api/backup/import/system', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: typeof jsonData === 'string' ? jsonData : JSON.stringify(jsonData)
   });
   return await res.json();
 }
@@ -355,6 +394,127 @@ export async function restoreBackupSnapshot(id: string): Promise<void> {
 export function downloadBackupSnapshot(id: string): void {
   window.open(`/api/backup/snapshots/${encodeURIComponent(id)}/download`, '_blank');
 }
+
+export async function fetchTMDBCollection(collectionId: number): Promise<{
+  id: number;
+  name: string;
+  overview: string;
+  posterUrl: string;
+  backdropUrl: string;
+  parts: Array<{
+    tmdbId: number;
+    title: string;
+    originalTitle?: string;
+    overview: string;
+    posterUrl: string;
+    backdropUrl: string;
+    releaseYear: number;
+    rating: number;
+  }>;
+}> {
+  const res = await fetch(`/api/tmdb/collection?id=${collectionId}`);
+  const data = await res.json();
+  if (!data.success) throw new Error(data.message || 'Failed to fetch collection details');
+  return data.collection;
+}
+
+export async function runCollectarrScan(): Promise<{
+  message: string;
+  updatedCount: number;
+  collectionCount: number;
+  collections: Array<{ id: number; name: string; posterUrl?: string; backdropUrl?: string }>;
+}> {
+  const res = await fetch('/api/collections/scan', { method: 'POST' });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.message || 'Collectarr scan failed');
+  return data;
+}
+
+export async function clearCollectarrCollections(): Promise<{ message: string; resetCount: number }> {
+  const res = await fetch('/api/collections/clear', { method: 'POST' });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.message || 'Failed to clear collection tags');
+  return data;
+}
+
+export async function fetchCollectarrItemStack(params: { mediaItemId?: string; tmdbId?: number; title?: string }): Promise<{
+  success: boolean;
+  hasCollection: boolean;
+  isLocalGroup?: boolean;
+  collectionInfo?: { id: number; name: string; overview?: string; posterUrl?: string; backdropUrl?: string };
+  parts?: Array<{
+    tmdbId: number;
+    title: string;
+    originalTitle?: string;
+    overview: string;
+    posterUrl: string;
+    backdropUrl: string;
+    releaseYear: number;
+    rating: number;
+    inVault: boolean;
+    inWishlist: boolean;
+    vaultItemId?: string;
+    format?: string;
+    shelfLocation?: string;
+    condition?: string;
+  }>;
+  totalParts?: number;
+  ownedParts?: number;
+  wishlistParts?: number;
+  completionPercent?: number;
+  message?: string;
+}> {
+  const query = new URLSearchParams();
+  if (params.mediaItemId) query.append('mediaItemId', params.mediaItemId);
+  if (params.tmdbId) query.append('tmdbId', String(params.tmdbId));
+  if (params.title) query.append('title', params.title);
+
+  const res = await fetch(`/api/collectarr/item-stack?${query.toString()}`);
+  return await res.json();
+}
+
+export async function addMissingCollectarrItem(payload: {
+  title: string;
+  tmdbId?: number;
+  releaseYear?: number;
+  posterUrl?: string;
+  backdropUrl?: string;
+  overview?: string;
+  rating?: number;
+  collectionInfo?: any;
+  targetState: 'wishlist' | 'vault';
+}): Promise<{ success: boolean; item?: any; message: string }> {
+  const res = await fetch('/api/collectarr/add-missing', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  return await res.json();
+}
+
+export function getSavedConfigDirPath(): string {
+  return localStorage.getItem('bluvault_config_dir_path') || '/config';
+}
+
+export function setSavedConfigDirPath(path: string): void {
+  localStorage.setItem('bluvault_config_dir_path', path);
+}
+
+export async function saveSystemConfigPath(configDirPath: string): Promise<any> {
+  setSavedConfigDirPath(configDirPath);
+  try {
+    const res = await fetch('/api/system/config-path', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ configDirPath })
+    });
+    return await res.json();
+  } catch (err) {
+    return { success: true, configDirPath };
+  }
+}
+
+
 
 
 

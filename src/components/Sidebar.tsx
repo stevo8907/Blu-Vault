@@ -20,7 +20,8 @@ import {
   Scan,
   Barcode,
   Lock,
-  Bookmark
+  Bookmark,
+  Layers
 } from 'lucide-react';
 import { ViewCategory, User } from '../types';
 import { getSavedNavItems, NavItem } from '../lib/navConfig';
@@ -406,23 +407,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   </button>
                 )}
 
-                {(!currentUser?.permissions || currentUser.permissions.canAddMedia !== false) && (
-                  <button
-                    onClick={() => handleNav('add-media')}
-                    className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-all ${
-                      activeCategory === 'add-media'
-                        ? 'bg-gradient-to-r from-blue-600 to-cyan-600 text-white font-bold shadow-md'
-                        : 'bg-blue-950/40 text-cyan-300 border border-cyan-800/40 hover:bg-cyan-900/40'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <PlusCircle className="w-3.5 h-3.5 text-cyan-400" />
-                      <span>Add Media Disc</span>
-                    </div>
-                    <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-cyan-950 text-cyan-300 border border-cyan-700/50">TMDB</span>
-                  </button>
-                )}
-
                 <button
                   onClick={() => handleNav('loans')}
                   className={`w-full flex items-center justify-between px-3 py-1.5 rounded-xl text-xs font-medium transition-all ${
@@ -456,40 +440,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <BarChart3 className="w-3.5 h-3.5 text-purple-400" />
                     <span>Vault Analytics</span>
                   </div>
-                </button>
-
-                <button
-                  onClick={() => handleNav('api-settings')}
-                  className={`w-full flex items-center justify-between px-3 py-1.5 rounded-xl text-xs font-medium transition-all ${
-                    activeCategory === 'api-settings'
-                      ? 'bg-slate-700 text-white font-bold'
-                      : 'text-slate-300 hover:bg-slate-800/60 hover:text-white'
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <Settings className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>Settings & Power Controls</span>
-                  </div>
-                  {currentUser?.permissions && currentUser.permissions.canManageApiKeys === false && (
-                    <Lock className="w-3 h-3 text-slate-500" />
-                  )}
-                </button>
-
-                <button
-                  onClick={() => handleNav('user-management')}
-                  className={`w-full flex items-center justify-between px-3 py-1.5 rounded-xl text-xs font-medium transition-all ${
-                    activeCategory === 'user-management'
-                      ? 'bg-slate-700 text-white font-bold'
-                      : 'text-slate-300 hover:bg-slate-800/60 hover:text-white'
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <Users className="w-3.5 h-3.5 text-slate-400" />
-                    <span>User Accounts</span>
-                  </div>
-                  {currentUser?.permissions && currentUser.permissions.canManageUsers === false && (
-                    <Lock className="w-3 h-3 text-slate-500" />
-                  )}
                 </button>
               </div>
             )}
