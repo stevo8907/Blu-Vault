@@ -15,7 +15,7 @@ import {
   Sun,
   Moon
 } from 'lucide-react';
-import { User } from '../types';
+import { User, MediaItem } from '../types';
 import { LogoIcon } from './LogoIcon';
 
 interface HeaderProps {
@@ -31,6 +31,8 @@ interface HeaderProps {
   totalMediaCount: number;
   theme?: 'dark' | 'light';
   onToggleTheme?: () => void;
+  mediaItems?: MediaItem[];
+  onSelectMediaItem?: (item: MediaItem) => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -45,13 +47,15 @@ export const Header: React.FC<HeaderProps> = ({
   onLogout,
   totalMediaCount,
   theme = 'dark',
-  onToggleTheme
+  onToggleTheme,
+  mediaItems = [],
+  onSelectMediaItem
 }) => {
 
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Close dropdown when clicking outside
+  // Close user dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
@@ -96,13 +100,18 @@ export const Header: React.FC<HeaderProps> = ({
             type="text"
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Search titles, barcode, director, genres, or shelf location..."
-            className="w-full bg-slate-900/90 border border-slate-800 focus:border-blue-500/80 rounded-xl pl-10 pr-4 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all shadow-inner"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            placeholder="Search database (titles, directors, barcodes, genres)..."
+            className="w-full bg-slate-900/90 border border-slate-800 focus:border-blue-500/80 rounded-xl pl-10 pr-10 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all shadow-inner"
           />
           {searchQuery && (
             <button
               onClick={() => onSearchChange('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-white"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+              title="Clear Search"
             >
               ✕
             </button>

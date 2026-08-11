@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { MediaCard } from './components/MediaCard';
@@ -19,7 +19,7 @@ import { MediaItem, User, ViewCategory } from './types';
 import { fetchMedia, fetchUsers, checkAuthStatus, logoutUser, updateLoanStatus, toggleFavorite, deleteMediaItem, updateMediaItem } from './lib/api';
 import { getSavedNavItems } from './lib/navConfig';
 import { isCompleteTvSeries } from './lib/tvUtils';
-import { Disc, Film, Tv, Sparkles, Filter, Plus, Scan, Lock, Layers, ChevronDown, ChevronUp } from 'lucide-react';
+import { Disc, Film, Tv, Sparkles, Filter, Plus, Scan, Lock, Layers, ChevronDown, ChevronUp, Gamepad2 } from 'lucide-react';
 
 export default function App() {
   const [screenState, setScreenState] = useState<'LOADING' | 'OOBE' | 'LOGIN' | 'APP'>('LOADING');
@@ -172,8 +172,9 @@ export default function App() {
     return Boolean(m.numberOfSeasons && m.numberOfSeasons > 0);
   };
 
-  const isMovieItem = (m: MediaItem) => m.type === 'movie';
-  const isTvItem = (m: MediaItem) => m.type === 'tv';
+  const isMovieItem = (m: MediaItem) => m.type === 'movie' && !isAnimeItem(m);
+  const isTvItem = (m: MediaItem) => (m.type === 'tv' || Boolean(m.numberOfSeasons && m.numberOfSeasons > 0)) && !isAnimeItem(m);
+  const isGameItem = (m: MediaItem) => m.type === 'game';
 
   // Filter media items
   const getFilteredMedia = () => {
@@ -326,6 +327,127 @@ export default function App() {
       setExpandedShowIds(new Set(tvShowsInView.map(m => m.id)));
     }
   };
+
+  const isSearching = searchQuery.trim().length > 0;
+
+  const searchBaseList = useMemo(() => {
+    if (!isSearching) return [];
+    const q = searchQuery.toLowerCase().trim();
+    let list = activeCategory === 'wishlist' 
+      ? mediaItems.filter(m => Boolean(m.isWishlist))
+      : mediaItems.filter(m => !m.isWishlist);
+
+    let matches = list.filter(m =>
+      m.title.toLowerCase().includes(q) ||
+      (m.originalTitle && m.originalTitle.toLowerCase().includes(q)) ||
+      (m.director && m.director.toLowerCase().includes(q)) ||
+      (m.cast && m.cast.some(c => c.toLowerCase().includes(q))) ||
+      (m.barcode && m.barcode.includes(q)) ||
+      (m.genres && m.genres.some(g => g.toLowerCase().includes(q))) ||
+      m.shelfLocation.toLowerCase().includes(q)
+    );
+
+    if (sortBy === 'year-desc') {
+      matches.sort((a, b) => b.releaseYear - a.releaseYear);
+    } else if (sortBy === 'rating') {
+      matches.sort((a, b) => b.rating - a.rating);
+    } else if (sortBy === 'title') {
+      matches.sort((a, b) => a.title.localeCompare(b.title));
+    } else {
+      matches.sort((a, b) => new Date(b.addedAt).getTime() - new Date(a.addedAt).getTime());
+    }
+
+    return matches;
+  }, [searchQuery, mediaItems, activeCategory, sortBy, isSearching]);
+
+  const searchMovies = useMemo(() => searchBaseList.filter(isMovieItem), [searchBaseList]);
+  const searchTvShows = useMemo(() => searchBaseList.filter(isTvItem), [searchBaseList]);
+  const searchAnime = useMemo(() => searchBaseList.filter(isAnimeItem), [searchBaseList]);
+  const searchGames = useMemo(() => searchBaseList.filter(isGameItem), [searchBaseList]);
+
+  const renderMediaGridGroup = (items: MediaItem[]) => (
+    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 sm:gap-6">
+      {items.map((item, idx) => {
+        const isTv = isTvShowItem(item);
+        const seasonsList = item.seasons && item.seasons.length > 0
+          ? item.seasons
+          : Array.from({ length: item.numberOfSeasons || 1 }, (_, i) => ({
+              seasonNumber: i + 1,
+              name: `Season ${i + 1}`,
+              episodeCount: 10,
+              ownedInVault: true
+            }));
+        const isExpanded = isTv && expandedShowIds.has(item.id);
+
+        return (
+          <React.Fragment key={`${item.id}-${idx}`}>
+            <MediaCard
+              item={item}
+              onClick={() => {
+                setSelectedSeasonForModal(undefined);
+                setSelectedMediaDetail(item);
+              }}
+              onToggleFavorite={(e) => handleToggleFavorite(e, item.id)}
+              isTvShow={isTv}
+              seasonsCount={seasonsList.length}
+              isExpanded={isExpanded}
+              onToggleExpand={() => toggleShowExpand(item.id)}
+            />
+
+            {/* Expanded TV Show Seasons Drawer */}
+            {isExpanded && (
+              <div className="col-span-full bg-slate-950/95 border-2 border-indigo-500/60 rounded-3xl p-4 sm:p-6 shadow-2xl shadow-indigo-950/60 space-y-4 my-2 animate-fade-in relative overflow-hidden">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-indigo-900/40">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 rounded-2xl bg-indigo-950 border border-indigo-700/50 text-indigo-400 shadow-md">
+                      <Layers className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="font-extrabold text-base text-white flex items-center gap-2">
+                        <span>{item.title}</span>
+                        <span className="px-2.5 py-0.5 rounded-full bg-indigo-950 text-indigo-300 border border-indigo-800 text-xs font-mono font-bold">
+                          {seasonsList.length} {seasonsList.length === 1 ? 'Season' : 'Seasons'}
+                        </span>
+                      </h3>
+                      <p className="text-xs text-slate-400">
+                        Individual season physical media discs in vault • Click any season to view episodes & details
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => toggleShowExpand(item.id)}
+                    className="self-start sm:self-center px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
+                  >
+                    <ChevronUp className="w-4 h-4 text-indigo-400" />
+                    <span>Collapse Seasons</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 sm:gap-4">
+                  {seasonsList.map((season) => (
+                    <SeasonCard
+                      key={`${item.id}-season-${season.seasonNumber}`}
+                      parentItem={item}
+                      season={season}
+                      onClick={() => {
+                        setSelectedSeasonForModal(season.seasonNumber);
+                        setSelectedMediaDetail(item);
+                      }}
+                      onToggleOwned={(e) => {
+                        e.stopPropagation();
+                        handleToggleSeasonOwned(item.id, season.seasonNumber);
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
 
   const handleToggleSeasonOwned = async (mediaId: string, seasonNumber: number) => {
     const item = mediaItems.find(m => m.id === mediaId);
@@ -497,6 +619,8 @@ export default function App() {
         totalMediaCount={mediaItems.length}
         theme={theme}
         onToggleTheme={handleToggleTheme}
+        mediaItems={mediaItems}
+        onSelectMediaItem={(item) => setSelectedMediaDetail(item)}
       />
 
       {/* Main Container Layout */}
@@ -593,6 +717,119 @@ export default function App() {
                   </p>
                 </div>
               </div>
+            ) : isSearching ? (
+              /* SEARCH RESULTS SECTIONED VIEW */
+              <div className="space-y-8 animate-fade-in">
+                {/* Search Header Banner */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-900/90 border border-slate-800 p-5 rounded-3xl shadow-lg">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-xl font-black text-white capitalize tracking-wide">
+                        Database Search Results
+                      </h2>
+                      <span className="px-2.5 py-0.5 rounded-full bg-blue-950 text-blue-300 border border-blue-700/50 text-xs font-mono font-bold">
+                        {searchBaseList.length} {searchBaseList.length === 1 ? 'match' : 'matches'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 font-mono mt-0.5">
+                      Query: "{searchQuery}" • Categorized by Movies, TV Shows, Anime & Games
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => setSearchQuery('')}
+                      className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition-all shadow-sm cursor-pointer"
+                    >
+                      Clear Search
+                    </button>
+                  </div>
+                </div>
+
+                {searchBaseList.length === 0 ? (
+                  <div className="py-20 text-center bg-slate-900/60 border border-slate-800 rounded-3xl p-8 max-w-md mx-auto space-y-4">
+                    <Disc className="w-12 h-12 text-slate-600 mx-auto" />
+                    <div>
+                      <h3 className="font-bold text-lg text-white">No Physical Media Found</h3>
+                      <p className="text-xs text-slate-400 mt-1">
+                        No database records found matching "{searchQuery}".
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setSearchQuery('')}
+                      className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-extrabold text-xs shadow-md transition-all cursor-pointer"
+                    >
+                      Clear Search Filter
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-8">
+                    {/* SECTION 1: MOVIES (TOP) */}
+                    {searchMovies.length > 0 && (
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-2xl bg-gradient-to-r from-blue-950/80 via-slate-900 to-slate-900 border border-blue-800/60 text-blue-200 shadow-md">
+                          <div className="p-1.5 rounded-xl bg-blue-500/20 text-blue-400 border border-blue-500/30">
+                            <Film className="w-5 h-5" />
+                          </div>
+                          <h3 className="font-extrabold text-base tracking-wide text-white">Movies</h3>
+                          <span className="px-2.5 py-0.5 rounded-full bg-blue-900/80 text-blue-300 text-xs font-mono font-bold border border-blue-700/50">
+                            {searchMovies.length} {searchMovies.length === 1 ? 'Movie' : 'Movies'}
+                          </span>
+                        </div>
+                        {renderMediaGridGroup(searchMovies)}
+                      </div>
+                    )}
+
+                    {/* SECTION 2: TV SHOWS (BELOW MOVIES) */}
+                    {searchTvShows.length > 0 && (
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-2xl bg-gradient-to-r from-indigo-950/80 via-slate-900 to-slate-900 border border-indigo-800/60 text-indigo-200 shadow-md">
+                          <div className="p-1.5 rounded-xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">
+                            <Tv className="w-5 h-5" />
+                          </div>
+                          <h3 className="font-extrabold text-base tracking-wide text-white">TV Shows</h3>
+                          <span className="px-2.5 py-0.5 rounded-full bg-indigo-900/80 text-indigo-300 text-xs font-mono font-bold border border-indigo-700/50">
+                            {searchTvShows.length} {searchTvShows.length === 1 ? 'TV Show' : 'TV Shows'}
+                          </span>
+                        </div>
+                        {renderMediaGridGroup(searchTvShows)}
+                      </div>
+                    )}
+
+                    {/* SECTION 3: ANIME (BELOW TV SHOWS) */}
+                    {searchAnime.length > 0 && (
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-2xl bg-gradient-to-r from-rose-950/80 via-slate-900 to-slate-900 border border-rose-800/60 text-rose-200 shadow-md">
+                          <div className="p-1.5 rounded-xl bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                            <Sparkles className="w-5 h-5 text-rose-300" />
+                          </div>
+                          <h3 className="font-extrabold text-base tracking-wide text-white">Anime</h3>
+                          <span className="px-2.5 py-0.5 rounded-full bg-rose-900/80 text-rose-300 text-xs font-mono font-bold border border-rose-700/50">
+                            {searchAnime.length} {searchAnime.length === 1 ? 'Anime Title' : 'Anime Titles'}
+                          </span>
+                        </div>
+                        {renderMediaGridGroup(searchAnime)}
+                      </div>
+                    )}
+
+                    {/* SECTION 4: VIDEO GAMES (IF ANY MATCH) */}
+                    {searchGames.length > 0 && (
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-2xl bg-gradient-to-r from-emerald-950/80 via-slate-900 to-slate-900 border border-emerald-800/60 text-emerald-200 shadow-md">
+                          <div className="p-1.5 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                            <Gamepad2 className="w-5 h-5 text-emerald-300" />
+                          </div>
+                          <h3 className="font-extrabold text-base tracking-wide text-white">Video Games</h3>
+                          <span className="px-2.5 py-0.5 rounded-full bg-emerald-900/80 text-emerald-300 text-xs font-mono font-bold border border-emerald-700/50">
+                            {searchGames.length} {searchGames.length === 1 ? 'Game' : 'Games'}
+                          </span>
+                        </div>
+                        {renderMediaGridGroup(searchGames)}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             ) : (
               <div className="space-y-6">
                 
@@ -661,110 +898,92 @@ export default function App() {
                         No disc items match your active category or search query "{searchQuery}".
                       </p>
                     </div>
-                    {(!currentUser?.permissions || currentUser.permissions.canAddMedia !== false) && (
-                      <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
-                        <button
-                          onClick={() => setIsAddMediaOpen(true)}
-                          className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-extrabold text-xs shadow-md flex items-center justify-center gap-2 transition-all"
-                        >
-                          <Film className="w-4 h-4" />
-                          <span>Add first Movie to Vault</span>
-                        </button>
+                    {(!currentUser?.permissions || currentUser.permissions.canAddMedia !== false) && (() => {
+                      const navGroup = getSavedNavItems().find(item => item.id === activeCategory)?.group;
+                      const isMoviePanel = activeCategory.startsWith('movies-') || activeCategory === 'movies' || navGroup === 'movies';
+                      const isTvPanel = activeCategory.startsWith('tv-') || activeCategory === 'tv' || navGroup === 'tv';
+                      const isAnimePanel = activeCategory.startsWith('anime-') || activeCategory === 'anime' || navGroup === 'anime';
+                      const isGamePanel = activeCategory.startsWith('games-') || activeCategory === 'games' || navGroup === 'games';
 
-                        <button
-                          onClick={() => setIsAddMediaOpen(true)}
-                          className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs shadow-md flex items-center justify-center gap-2 transition-all"
-                        >
-                          <Tv className="w-4 h-4" />
-                          <span>Add first TV Show to Vault</span>
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 sm:gap-6">
-                    {filteredMedia.map((item, idx) => {
-                      const isTv = isTvShowItem(item);
-                      const seasonsList = item.seasons && item.seasons.length > 0
-                        ? item.seasons
-                        : Array.from({ length: item.numberOfSeasons || 1 }, (_, i) => ({
-                            seasonNumber: i + 1,
-                            name: `Season ${i + 1}`,
-                            episodeCount: 10,
-                            ownedInVault: true
-                          }));
-                      const isExpanded = isTv && expandedShowIds.has(item.id);
+                      if (isMoviePanel) {
+                        return (
+                          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+                            <button
+                              onClick={() => setIsAddMediaOpen(true)}
+                              className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-extrabold text-xs shadow-md flex items-center justify-center gap-2 transition-all cursor-pointer"
+                            >
+                              <Film className="w-4 h-4" />
+                              <span>Add Movie to Vault</span>
+                            </button>
+                          </div>
+                        );
+                      }
+
+                      if (isTvPanel) {
+                        return (
+                          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+                            <button
+                              onClick={() => setIsAddMediaOpen(true)}
+                              className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs shadow-md flex items-center justify-center gap-2 transition-all cursor-pointer"
+                            >
+                              <Tv className="w-4 h-4" />
+                              <span>Add TV Show to Vault</span>
+                            </button>
+                          </div>
+                        );
+                      }
+
+                      if (isAnimePanel) {
+                        return (
+                          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+                            <button
+                              onClick={() => setIsAddMediaOpen(true)}
+                              className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs shadow-md flex items-center justify-center gap-2 transition-all cursor-pointer"
+                            >
+                              <Sparkles className="w-4 h-4 text-rose-200" />
+                              <span>Add Anime to Vault</span>
+                            </button>
+                          </div>
+                        );
+                      }
+
+                      if (isGamePanel) {
+                        return (
+                          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+                            <button
+                              onClick={() => setIsAddMediaOpen(true)}
+                              className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs shadow-md flex items-center justify-center gap-2 transition-all cursor-pointer"
+                            >
+                              <Gamepad2 className="w-4 h-4 text-emerald-200" />
+                              <span>Add Game to Vault</span>
+                            </button>
+                          </div>
+                        );
+                      }
 
                       return (
-                        <React.Fragment key={`${item.id}-${idx}`}>
-                          <MediaCard
-                            item={item}
-                            onClick={() => {
-                              setSelectedSeasonForModal(undefined);
-                              setSelectedMediaDetail(item);
-                            }}
-                            onToggleFavorite={(e) => handleToggleFavorite(e, item.id)}
-                            isTvShow={isTv}
-                            seasonsCount={seasonsList.length}
-                            isExpanded={isExpanded}
-                            onToggleExpand={() => toggleShowExpand(item.id)}
-                          />
+                        <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+                          <button
+                            onClick={() => setIsAddMediaOpen(true)}
+                            className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-extrabold text-xs shadow-md flex items-center justify-center gap-2 transition-all cursor-pointer"
+                          >
+                            <Film className="w-4 h-4" />
+                            <span>Add Movie to Vault</span>
+                          </button>
 
-                          {/* Expanded TV Show Seasons Drawer */}
-                          {isExpanded && (
-                            <div className="col-span-full bg-slate-950/95 border-2 border-indigo-500/60 rounded-3xl p-4 sm:p-6 shadow-2xl shadow-indigo-950/60 space-y-4 my-2 animate-fade-in relative overflow-hidden">
-                              {/* Header banner for expanded seasons */}
-                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-indigo-900/40">
-                                <div className="flex items-center gap-3">
-                                  <div className="p-2.5 rounded-2xl bg-indigo-950 border border-indigo-700/50 text-indigo-400 shadow-md">
-                                    <Layers className="w-5 h-5" />
-                                  </div>
-                                  <div>
-                                    <h3 className="font-extrabold text-base text-white flex items-center gap-2">
-                                      <span>{item.title}</span>
-                                      <span className="px-2.5 py-0.5 rounded-full bg-indigo-950 text-indigo-300 border border-indigo-800 text-xs font-mono font-bold">
-                                        {seasonsList.length} {seasonsList.length === 1 ? 'Season' : 'Seasons'}
-                                      </span>
-                                    </h3>
-                                    <p className="text-xs text-slate-400">
-                                      Individual season physical media discs in vault • Click any season to view episodes & details
-                                    </p>
-                                  </div>
-                                </div>
-
-                                <button
-                                  onClick={() => toggleShowExpand(item.id)}
-                                  className="self-start sm:self-center px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
-                                >
-                                  <ChevronUp className="w-4 h-4 text-indigo-400" />
-                                  <span>Collapse Seasons</span>
-                                </button>
-                              </div>
-
-                              {/* Grid of Season Cards */}
-                              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 sm:gap-4">
-                                {seasonsList.map((season) => (
-                                  <SeasonCard
-                                    key={`${item.id}-season-${season.seasonNumber}`}
-                                    parentItem={item}
-                                    season={season}
-                                    onClick={() => {
-                                      setSelectedSeasonForModal(season.seasonNumber);
-                                      setSelectedMediaDetail(item);
-                                    }}
-                                    onToggleOwned={(e) => {
-                                      e.stopPropagation();
-                                      handleToggleSeasonOwned(item.id, season.seasonNumber);
-                                    }}
-                                  />
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </React.Fragment>
+                          <button
+                            onClick={() => setIsAddMediaOpen(true)}
+                            className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs shadow-md flex items-center justify-center gap-2 transition-all cursor-pointer"
+                          >
+                            <Tv className="w-4 h-4" />
+                            <span>Add TV Show to Vault</span>
+                          </button>
+                        </div>
                       );
-                    })}
+                    })()}
                   </div>
+                ) : (
+                  renderMediaGridGroup(filteredMedia)
                 )}
 
               </div>
