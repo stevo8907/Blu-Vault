@@ -25,9 +25,19 @@ import {
   HardDrive,
   Users,
   Film,
-  Folder
+  Folder,
+  Tag,
+  MapPin
 } from 'lucide-react';
 import { submitOobeSetup, saveApiConfigs, testApiConfig, importVaultBackup, saveAutoBackupConfig, getSavedConfigDirPath, saveSystemConfigPath } from '../lib/api';
+import { 
+  getSavedVaultName, 
+  setSavedVaultName, 
+  getSavedVaultLocation, 
+  setSavedVaultLocation, 
+  setSavedConfigDirPath,
+  saveSystemPaths 
+} from '../lib/vaultConfig';
 import { 
   LOCATION_OPTIONS, 
   CURRENCY_OPTIONS, 
@@ -49,7 +59,7 @@ export const OobeSetupView: React.FC<OobeSetupViewProps> = ({ onCompleteOobe }) 
   // Mode selection: 'choice' = asking Clean vs Restore, 'clean' = standard 1-4 step wizard, 'restore' = backup restoration
   const [setupMode, setSetupMode] = useState<'choice' | 'clean' | 'restore'>('choice');
 
-  // Setup Step in Clean mode: 1 = Admin Account, 2 = TMDB API Key (Mandatory), 3 = Region & Currency, 4 = Hamburger Menu
+  // Setup Step in Clean mode: 1 = Admin Account, 2 = TMDB API Key (Mandatory), 3 = Region, Vault & Directory, 4 = Hamburger Menu
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3 | 4>(1);
 
   // Step 1 State: Admin Credentials
@@ -67,9 +77,11 @@ export const OobeSetupView: React.FC<OobeSetupViewProps> = ({ onCompleteOobe }) 
   const [isTestingKey, setIsTestingKey] = useState(false);
   const [keyTestStatus, setKeyTestStatus] = useState<{ success: boolean; message: string } | null>(null);
 
-  // Step 3 State: Location & Currency & Automated Backup & Docker Config Path
+  // Step 3 State: Location & Currency & Vault Name/Location & Automated Backup & Docker Config Path
   const [selectedLocation, setSelectedLocation] = useState(getSavedLocationCode());
   const [selectedCurrency, setSelectedCurrency] = useState(getSavedCurrencyCode());
+  const [vaultName, setVaultName] = useState(getSavedVaultName());
+  const [vaultLocation, setVaultLocation] = useState(getSavedVaultLocation());
   const [enableAutoBackup, setEnableAutoBackup] = useState(false);
   const [configDirPath, setConfigDirPath] = useState(getSavedConfigDirPath());
 
@@ -263,7 +275,10 @@ export const OobeSetupView: React.FC<OobeSetupViewProps> = ({ onCompleteOobe }) 
   const saveRegionSettings = () => {
     setSavedLocationCode(selectedLocation);
     setSavedCurrencyCode(selectedCurrency);
-    saveSystemConfigPath(configDirPath).catch(() => {});
+    setSavedVaultName(vaultName);
+    setSavedVaultLocation(vaultLocation);
+    setSavedConfigDirPath(configDirPath);
+    saveSystemPaths({ configDirPath, vaultName, vaultLocation }).catch(() => {});
     saveAutoBackupConfig({ enabled: enableAutoBackup }).catch(() => {});
   };
 
@@ -816,15 +831,15 @@ export const OobeSetupView: React.FC<OobeSetupViewProps> = ({ onCompleteOobe }) 
                     </form>
                   )}
 
-                  {/* STEP 3: LOCATION & CURRENCY CHOICE */}
+                  {/* STEP 3: VAULT IDENTITY, STORAGE & REGION CHOICE */}
                   {currentStep === 3 && (
                     <div className="space-y-6 animate-fade-in">
                       <div className="bg-emerald-950/40 border border-emerald-800/50 p-4 rounded-2xl text-xs text-emerald-200 leading-relaxed flex items-start justify-between gap-3">
                         <div className="flex items-start gap-3">
                           <Globe className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
                           <div>
-                            <span className="font-extrabold text-white block">Step 3: Choose Your Location & Currency</span>
-                            Select your country/region to automatically set the local currency for purchase logs, total collection valuation, and stats display.
+                            <span className="font-extrabold text-white block">Step 3: Vault Name, Storage Directory & Regional Settings</span>
+                            Pick your vault's display name, location, and the storage directory where all database files, automated backups, and media caches will reside.
                           </div>
                         </div>
 
@@ -834,10 +849,99 @@ export const OobeSetupView: React.FC<OobeSetupViewProps> = ({ onCompleteOobe }) 
                         </div>
                       </div>
 
-                      {/* Location Country Picker */}
-                      <div className="space-y-2">
+                      {/* 1. Vault Name & Physical/Logical Location */}
+                      <div className="space-y-3">
                         <label className="text-xs font-extrabold text-slate-200 uppercase tracking-wide flex items-center gap-2">
-                          <Globe className="w-4 h-4 text-cyan-400" /> 1. Select Country / Region
+                          <Tag className="w-4 h-4 text-cyan-400" /> 1. Vault Identity & Location
+                        </label>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-slate-950/80 border border-slate-800 p-4 rounded-2xl">
+                          <div className="space-y-1.5">
+                            <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                              <HardDrive className="w-3.5 h-3.5 text-cyan-400" /> Vault Name *
+                            </label>
+                            <input
+                              type="text"
+                              required
+                              value={vaultName}
+                              onChange={(e) => setVaultName(e.target.value)}
+                              placeholder="Blu-Vault"
+                              className="w-full bg-slate-900 border border-slate-700 focus:border-cyan-500 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none"
+                            />
+                            <p className="text-[11px] text-slate-400">Display name for your media vault instance.</p>
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                              <MapPin className="w-3.5 h-3.5 text-indigo-400" /> Vault Location *
+                            </label>
+                            <input
+                              type="text"
+                              required
+                              value={vaultLocation}
+                              onChange={(e) => setVaultLocation(e.target.value)}
+                              placeholder="Home Server / Basement Rack"
+                              className="w-full bg-slate-900 border border-slate-700 focus:border-indigo-500 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none"
+                            />
+                            <p className="text-[11px] text-slate-400">Physical host, rack, or NAS machine location.</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* 2. Container / Storage Configuration Directory Path */}
+                      <div className="space-y-3 pt-2 border-t border-slate-800">
+                        <label className="text-xs font-extrabold text-slate-200 uppercase tracking-wide flex items-center gap-2">
+                          <Folder className="w-4 h-4 text-purple-400" /> 2. Configuration & Storage Directory Path
+                        </label>
+                        <div className="bg-slate-950/80 border border-slate-800 p-4 rounded-2xl space-y-3">
+                          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                            <div className="space-y-1 max-w-md">
+                              <h4 className="text-xs font-extrabold text-white flex items-center gap-2">
+                                <span>Software Storage Config Directory</span>
+                                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-purple-950 text-purple-300 border border-purple-800">
+                                  Container Volume
+                                </span>
+                              </h4>
+                              <p className="text-[11px] text-slate-400 leading-relaxed">
+                                State where database files, backup snapshots, and cached artwork will be stored in your container (e.g., <code className="text-purple-300 font-mono">/config</code> or <code className="text-purple-300 font-mono">/data</code>).
+                              </p>
+                            </div>
+
+                            <div className="w-full sm:w-64 shrink-0">
+                              <div className="relative">
+                                <Folder className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-purple-400" />
+                                <input
+                                  type="text"
+                                  value={configDirPath}
+                                  onChange={(e) => setConfigDirPath(e.target.value)}
+                                  placeholder="/config"
+                                  className="w-full bg-slate-900 border border-slate-700 focus:border-purple-500 rounded-xl pl-9 pr-3 py-2 text-xs text-white font-mono placeholder-slate-500 focus:outline-none"
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Breakdown of what lives inside this directory */}
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 border-t border-slate-800/80 text-[11px] font-mono">
+                            <div className="p-2 rounded-xl bg-slate-900/60 border border-slate-800 text-slate-300 flex items-center gap-2">
+                              <Database className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                              <span className="truncate"><strong>Databases:</strong> bluvault-*.json</span>
+                            </div>
+                            <div className="p-2 rounded-xl bg-slate-900/60 border border-slate-800 text-slate-300 flex items-center gap-2">
+                              <HardDrive className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                              <span className="truncate"><strong>Backups:</strong> /backups/</span>
+                            </div>
+                            <div className="p-2 rounded-xl bg-slate-900/60 border border-slate-800 text-slate-300 flex items-center gap-2">
+                              <Film className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                              <span className="truncate"><strong>Caches:</strong> /cache/</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* 3. Location Country Picker */}
+                      <div className="space-y-2 pt-2 border-t border-slate-800">
+                        <label className="text-xs font-extrabold text-slate-200 uppercase tracking-wide flex items-center gap-2">
+                          <Globe className="w-4 h-4 text-cyan-400" /> 3. Select Country / Region
                         </label>
                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
                           {LOCATION_OPTIONS.map((loc) => {
@@ -864,10 +968,10 @@ export const OobeSetupView: React.FC<OobeSetupViewProps> = ({ onCompleteOobe }) 
                         </div>
                       </div>
 
-                      {/* Currency Override Picker */}
+                      {/* 4. Currency Override Picker */}
                       <div className="space-y-2 pt-2 border-t border-slate-800">
                         <label className="text-xs font-extrabold text-slate-200 uppercase tracking-wide flex items-center gap-2">
-                          <Coins className="w-4 h-4 text-emerald-400" /> 2. Preferred Currency Symbol
+                          <Coins className="w-4 h-4 text-emerald-400" /> 4. Preferred Currency Symbol
                         </label>
                         <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
                           {CURRENCY_OPTIONS.map((c) => {
@@ -891,10 +995,10 @@ export const OobeSetupView: React.FC<OobeSetupViewProps> = ({ onCompleteOobe }) 
                         </div>
                       </div>
 
-                      {/* Automated Database Backups Prompt */}
+                      {/* 5. Automated Database Backups Prompt */}
                       <div className="space-y-2 pt-3 border-t border-slate-800">
                         <label className="text-xs font-extrabold text-slate-200 uppercase tracking-wide flex items-center gap-2">
-                          <Database className="w-4 h-4 text-cyan-400" /> 3. Automated Database Backups
+                          <Database className="w-4 h-4 text-cyan-400" /> 5. Automated Database Backups
                         </label>
                         <div className="bg-slate-950/80 border border-slate-800 p-4 rounded-2xl space-y-3">
                           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
@@ -910,7 +1014,7 @@ export const OobeSetupView: React.FC<OobeSetupViewProps> = ({ onCompleteOobe }) 
                                 </span>
                               </h4>
                               <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-                                Automatically store daily snapshots of your media database in your runtime configuration directory with auto-retention cleanup.
+                                Automatically store daily snapshots of your media database into <code className="text-cyan-300 font-mono">{configDirPath || '/config'}/backups/</code> with auto-retention cleanup.
                               </p>
                             </div>
 
@@ -926,41 +1030,6 @@ export const OobeSetupView: React.FC<OobeSetupViewProps> = ({ onCompleteOobe }) 
                               <span className={`w-2.5 h-2.5 rounded-full ${enableAutoBackup ? 'bg-emerald-300 animate-pulse' : 'bg-slate-500'}`} />
                               <span>{enableAutoBackup ? 'Daily Backups Enabled' : 'Disabled (Manual Only)'}</span>
                             </button>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Container / Docker Software Configuration Directory Path */}
-                      <div className="space-y-2 pt-3 border-t border-slate-800">
-                        <label className="text-xs font-extrabold text-slate-200 uppercase tracking-wide flex items-center gap-2">
-                          <Folder className="w-4 h-4 text-purple-400" /> 4. Container Configuration & Storage Path
-                        </label>
-                        <div className="bg-slate-950/80 border border-slate-800 p-4 rounded-2xl space-y-3">
-                          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                            <div className="space-y-1 max-w-md">
-                              <h4 className="text-xs font-extrabold text-white flex items-center gap-2">
-                                <span>Docker Software Config Directory</span>
-                                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-purple-950 text-purple-300 border border-purple-800">
-                                  Container Volume
-                                </span>
-                              </h4>
-                              <p className="text-[11px] text-slate-400 leading-relaxed">
-                                State where the software configuration, runtime keys, and database persistent files will be running in your container environment (e.g., <code className="text-purple-300 font-mono">/config</code> or <code className="text-purple-300 font-mono">/data</code>).
-                              </p>
-                            </div>
-
-                            <div className="w-full sm:w-64 shrink-0">
-                              <div className="relative">
-                                <Folder className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-purple-400" />
-                                <input
-                                  type="text"
-                                  value={configDirPath}
-                                  onChange={(e) => setConfigDirPath(e.target.value)}
-                                  placeholder="/config"
-                                  className="w-full bg-slate-900 border border-slate-700 focus:border-purple-500 rounded-xl pl-9 pr-3 py-2 text-xs text-white font-mono placeholder-slate-500 focus:outline-none"
-                                />
-                              </div>
-                            </div>
                           </div>
                         </div>
                       </div>

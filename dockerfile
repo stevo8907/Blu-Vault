@@ -1,43 +1,50 @@
-# Use Node.js 20 LTS Alpine image for lightweight build
+# Multi-stage production build for Blu-Vault
+# Stage 1: Build application assets and backend server bundle
 FROM node:20-alpine AS builder
 
-# Set working directory
 WORKDIR /app
 
-# Copy package files and install dependencies
+# Install dependencies (including devDependencies needed for build)
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 
-# Copy full application source code
+# Copy source files
 COPY . .
 
-# Build the Vite frontend and bundle the Express server (dist/server.cjs)
+# Build the client SPA into dist/ and server into dist/server.cjs
 RUN npm run build
 
-# Production image
+# Stage 2: Production runtime environment
 FROM node:20-alpine AS runner
 
 WORKDIR /app
 
-# Set production environment
+# Install dumb-init or curl for container healthchecks
+RUN apk add --no-cache curl
+
+# Set environment
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# Copy package files and install production dependencies only
+# Copy package manifests and install only production dependencies
 COPY package*.json ./
-RUN npm install --omit=dev
+RUN npm ci --only=production && npm cache clean --force
 
-# Copy compiled build output from builder stage
+# Copy compiled artifacts from builder stage
 COPY --from=builder /app/dist ./dist
 
-# Create data directory for local JSON database storage
-RUN mkdir -p /app/data
+# Create config/data directories and assign permissions
+RUN mkdir -p /config /app/data && chown -R node:node /app /config
 
-# Expose port 3000
+# Expose server port
 EXPOSE 3000
 
-# Volume for database persistence
-VOLUME ["/app/data"]
+# Switch to non-root user for security
+USER node
 
-# Start the bundled Express server
+# Healthcheck to ensure Blu-Vault responds
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:3000/api/health || exit 1
+
+# Start the compiled production server
 CMD ["node", "dist/server.cjs"]

@@ -570,6 +570,13 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
             src={item.backdropUrl || item.posterUrl}
             alt={item.title}
             className="w-full h-full object-cover opacity-40 blur-xs scale-105"
+            onError={(e) => {
+              const el = e.target as HTMLImageElement;
+              const typeSub = item.type === 'tv' || item.type === 'anime' ? 'tv' : item.type === 'game' ? 'games' : 'movies';
+              if (!el.src.includes(`/api/cache/${typeSub}/${item.id}/`) && !el.src.includes(`/api/cache/media/${item.id}/`)) {
+                el.src = `/api/cache/${typeSub}/${item.id}/backdrop`;
+              }
+            }}
           />
           <div className="absolute inset-0 bg-gradient-to-t from-slate-900 via-slate-900/60 to-transparent" />
 
@@ -587,6 +594,13 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
               src={item.posterUrl}
               alt={item.title}
               className="w-28 sm:w-36 aspect-[2/3] object-cover rounded-xl border-2 border-slate-700/80 shadow-2xl shrink-0 -mb-10 sm:-mb-6 bg-slate-950"
+              onError={(e) => {
+                const el = e.target as HTMLImageElement;
+                const typeSub = item.type === 'tv' || item.type === 'anime' ? 'tv' : item.type === 'game' ? 'games' : 'movies';
+                if (!el.src.includes(`/api/cache/${typeSub}/${item.id}/`) && !el.src.includes(`/api/cache/media/${item.id}/`)) {
+                  el.src = `/api/cache/${typeSub}/${item.id}/poster`;
+                }
+              }}
             />
             <div className="flex-1 space-y-1">
               <div className="flex flex-wrap items-center gap-2">

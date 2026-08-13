@@ -1,4 +1,27 @@
 import { MediaItem, User, UserPermissions, UserRole, ApiConfig, TMDBSearchResult, BarcodeLookupResult, ViewCategory, Season, Episode, AutoBackupConfig, BackupSnapshot } from '../types';
+import { 
+  type SystemPathsInfo, 
+  getSavedVaultName, 
+  setSavedVaultName, 
+  getSavedVaultLocation, 
+  setSavedVaultLocation, 
+  getSavedConfigDirPath, 
+  setSavedConfigDirPath, 
+  fetchSystemPaths, 
+  saveSystemPaths 
+} from './vaultConfig';
+
+export type { SystemPathsInfo };
+export { 
+  getSavedVaultName, 
+  setSavedVaultName, 
+  getSavedVaultLocation, 
+  setSavedVaultLocation, 
+  getSavedConfigDirPath, 
+  setSavedConfigDirPath, 
+  fetchSystemPaths, 
+  saveSystemPaths 
+};
 
 export async function checkAuthStatus(): Promise<{ isOobeRequired: boolean; totalUsers: number }> {
   const res = await fetch('/api/auth/status');
@@ -492,14 +515,6 @@ export async function addMissingCollectarrItem(payload: {
   return await res.json();
 }
 
-export function getSavedConfigDirPath(): string {
-  return localStorage.getItem('bluvault_config_dir_path') || '/config';
-}
-
-export function setSavedConfigDirPath(path: string): void {
-  localStorage.setItem('bluvault_config_dir_path', path);
-}
-
 export async function saveSystemConfigPath(configDirPath: string): Promise<any> {
   setSavedConfigDirPath(configDirPath);
   try {
@@ -512,6 +527,58 @@ export async function saveSystemConfigPath(configDirPath: string): Promise<any> 
   } catch (err) {
     return { success: true, configDirPath };
   }
+}
+
+export async function fetchCacheStats(): Promise<{
+  success: boolean;
+  metadataCount: number;
+  imageCount: number;
+  movieDirs: number;
+  tvDirs: number;
+  gameDirs: number;
+  totalDirs: number;
+  imageSizeBytes: number;
+  imageSizeMB: string;
+  stats?: any;
+}> {
+  const res = await fetch('/api/cache/stats');
+  const data = await res.json();
+  const rawStats = data.stats || data;
+  return {
+    success: data.success ?? true,
+    metadataCount: rawStats.metadataCount ?? 0,
+    imageCount: rawStats.imageCount ?? 0,
+    movieDirs: rawStats.movieDirs ?? 0,
+    tvDirs: rawStats.tvDirs ?? 0,
+    gameDirs: rawStats.gameDirs ?? 0,
+    totalDirs: rawStats.totalDirs ?? ((rawStats.movieDirs || 0) + (rawStats.tvDirs || 0) + (rawStats.gameDirs || 0)),
+    imageSizeBytes: rawStats.imageSizeBytes ?? rawStats.totalBytes ?? 0,
+    imageSizeMB: rawStats.imageSizeMB ?? `${((rawStats.totalBytes || 0) / (1024 * 1024)).toFixed(2)} MB`,
+    stats: rawStats
+  };
+}
+
+export async function preloadCacheImages(): Promise<{
+  success: boolean;
+  message: string;
+  totalImages: number;
+  downloadedImages: number;
+  failedImages: number;
+}> {
+  const res = await fetch('/api/cache/preload-images', { method: 'POST' });
+  return res.json();
+}
+
+export async function clearCache(type: 'metadata' | 'images' | 'all'): Promise<{
+  success: boolean;
+  message: string;
+}> {
+  const res = await fetch('/api/cache/clear', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type })
+  });
+  return res.json();
 }
 
 

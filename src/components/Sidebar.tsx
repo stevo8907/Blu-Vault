@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { ViewCategory, User } from '../types';
 import { getSavedNavItems, NavItem } from '../lib/navConfig';
+import { getSavedVaultName, getSavedVaultLocation } from '../lib/vaultConfig';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -57,13 +58,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // Navigation items from centralized navConfig state
   const [navItems, setNavItems] = useState<NavItem[]>(getSavedNavItems());
   const [showGameNotice, setShowGameNotice] = useState(false);
+  const [vaultName, setVaultName] = useState(getSavedVaultName());
+  const [vaultLocation, setVaultLocation] = useState(getSavedVaultLocation());
 
   useEffect(() => {
     const handleNavUpdated = () => {
       setNavItems(getSavedNavItems());
     };
+    const handleVaultUpdated = () => {
+      setVaultName(getSavedVaultName());
+      setVaultLocation(getSavedVaultLocation());
+    };
+
     window.addEventListener('blu_vault_nav_updated', handleNavUpdated);
-    return () => window.removeEventListener('blu_vault_nav_updated', handleNavUpdated);
+    window.addEventListener('bluvault_vault_config_updated', handleVaultUpdated);
+
+    return () => {
+      window.removeEventListener('blu_vault_nav_updated', handleNavUpdated);
+      window.removeEventListener('bluvault_vault_config_updated', handleVaultUpdated);
+    };
   }, []);
 
   // Accordion open state for each category group
@@ -448,12 +461,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
 
         {/* System Footer Status */}
-        <div className="p-3 bg-slate-950/80 border-t border-slate-800/80 text-xs text-slate-400 flex items-center justify-between font-mono shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span className="text-[11px]">Database Online</span>
+        <div className="p-3 bg-slate-950/80 border-t border-slate-800/80 text-xs text-slate-400 space-y-1.5 font-mono shrink-0">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span className="text-[11px] text-slate-300 font-bold truncate max-w-[140px]">{vaultName}</span>
+            </div>
+            <span className="text-cyan-400 font-bold text-[10px]">v1.0 Beta</span>
           </div>
-          <span className="text-slate-500 text-[10px]">v0.1 Alpha</span>
+          <div className="text-[10px] text-slate-500 truncate flex items-center gap-1">
+            <span>📍</span>
+            <span className="truncate">{vaultLocation}</span>
+          </div>
         </div>
       </aside>
     </>

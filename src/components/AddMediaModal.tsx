@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { getCurrencyOption } from '../lib/currency';
 import { 
   X, 
@@ -48,6 +48,9 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
   const [step, setStep] = useState<'search' | 'review'>('search');
   const [activeTab, setActiveTab] = useState<'multi' | 'movie' | 'tv' | 'anime' | 'game'>('multi');
 
+  // Search input ref for instant blinking cursor autofocus
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
@@ -90,17 +93,39 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Execute TMDB Search
-  const handleSearch = async (e?: React.FormEvent) => {
+  // Auto-focus the search input with a blinking cursor whenever modal opens or returns to search step
+  useEffect(() => {
+    if (isOpen && step === 'search') {
+      const timer = setTimeout(() => {
+        if (searchInputRef.current) {
+          searchInputRef.current.focus();
+          // Position cursor at end if query already populated
+          if (searchInputRef.current.value) {
+            const len = searchInputRef.current.value.length;
+            searchInputRef.current.setSelectionRange(len, len);
+          }
+        }
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [isOpen, step]);
+
+  // Execute TMDB Search immediately
+  const handleSearch = async (e?: React.FormEvent, overrideQuery?: string) => {
     if (e) e.preventDefault();
-    if (!searchQuery.trim()) return;
+    const queryToSearch = (overrideQuery !== undefined ? overrideQuery : searchQuery).trim();
+    if (!queryToSearch) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
 
     setIsSearching(true);
     try {
       const searchType = activeTab === 'movie' || activeTab === 'tv' ? activeTab : 'multi';
-      const res = await searchTMDB(searchQuery, searchType);
-      setSearchResults(res.results);
-      setApiSource(res.source);
+      const res = await searchTMDB(queryToSearch, searchType);
+      setSearchResults(res.results || []);
+      setApiSource(res.source || 'tmdb');
     } catch (err) {
       console.error('Search error:', err);
     } finally {
@@ -108,26 +133,46 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
     }
   };
 
+  // Live Autofill Results While Typing (debounced 250ms)
+  useEffect(() => {
+    if (!isOpen || step !== 'search') return;
+    const trimmed = searchQuery.trim();
+    if (!trimmed) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+
+    setIsSearching(true);
+    const debounceTimer = setTimeout(async () => {
+      try {
+        const searchType = activeTab === 'movie' || activeTab === 'tv' ? activeTab : 'multi';
+        const res = await searchTMDB(trimmed, searchType);
+        setSearchResults(res.results || []);
+        setApiSource(res.source || 'tmdb');
+      } catch (err) {
+        console.error('Real-time typing search error:', err);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 250);
+
+    return () => clearTimeout(debounceTimer);
+  }, [searchQuery, activeTab, isOpen, step]);
+
   // Trigger search on initial query prop when modal opens
   useEffect(() => {
     if (isOpen && initialQuery && initialQuery.trim()) {
       setSearchQuery(initialQuery);
       setStep('search');
-      setIsSearching(true);
-      searchTMDB(initialQuery, 'multi')
-        .then((res) => {
-          setSearchResults(res.results || []);
-          setApiSource(res.source || 'tmdb');
-        })
-        .catch(err => console.error('Initial query search error:', err))
-        .finally(() => setIsSearching(false));
+      handleSearch(undefined, initialQuery);
     }
   }, [isOpen, initialQuery]);
 
-  // Trigger search on tab change
+  // Trigger search on tab change and keep focus in input
   useEffect(() => {
-    if (searchQuery.trim()) {
-      handleSearch();
+    if (isOpen && step === 'search' && searchInputRef.current) {
+      searchInputRef.current.focus();
     }
   }, [activeTab]);
 
@@ -442,35 +487,36 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
 
             {/* TMDB Search Input & Category Tabs */}
             <form onSubmit={handleSearch} className="space-y-3">
-              <div className="flex items-center gap-2">
-                <div className="relative flex-1">
-                  <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search TMDB API by title (e.g., Oppenheimer, Dune, Breaking Bad, Inception)..."
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-all"
-                  />
+              <div className="relative w-full">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  ref={searchInputRef}
+                  autoFocus
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search TMDB API by title (e.g., Oppenheimer, Dune, Breaking Bad, Inception)..."
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-12 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                />
+                <div className="absolute right-3.5 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
+                  {isSearching && (
+                    <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />
+                  )}
                   {searchQuery && (
                     <button
                       type="button"
-                      onClick={() => setSearchQuery('')}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-white"
+                      onClick={() => {
+                        setSearchQuery('');
+                        setSearchResults([]);
+                        searchInputRef.current?.focus();
+                      }}
+                      className="text-xs text-slate-400 hover:text-white p-1"
+                      title="Clear search"
                     >
                       ✕
                     </button>
                   )}
                 </div>
-
-                <button
-                  type="submit"
-                  disabled={isSearching || !searchQuery.trim()}
-                  className="px-5 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold text-sm transition-all shadow-md flex items-center gap-2 shrink-0"
-                >
-                  {isSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-                  <span>Search</span>
-                </button>
               </div>
 
               {/* Category selector tabs */}

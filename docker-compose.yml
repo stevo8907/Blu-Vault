@@ -1,10 +1,8 @@
-version: '3.8'
-
 services:
   blu-vault:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: dockerfile
     container_name: blu-vault
     restart: unless-stopped
     ports:
@@ -12,9 +10,15 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - TZ=UTC
     volumes:
-      - blu_vault_data:/app/data
+      # Persistent host path for databases (bluvault-system.json, bluvault-vault.json),
+      # automated backups (/backups), and image/metadata caches (/cache)
+      - ./config:/config
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
-volumes:
-  blu_vault_data:
-    driver: local

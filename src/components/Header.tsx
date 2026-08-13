@@ -83,8 +83,8 @@ export const Header: React.FC<HeaderProps> = ({
           <div className="hidden sm:block">
             <div className="flex items-center gap-2">
               <span className="font-extrabold text-lg text-white tracking-wider">BLU-VAULT</span>
-              <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-blue-950 text-blue-300 border border-blue-700/50">
-                0.1 Alpha
+              <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-700/50">
+                1.0 Beta
               </span>
             </div>
             <p className="text-[11px] text-slate-400 font-mono -mt-1">Homelab Physical Media Manager</p>

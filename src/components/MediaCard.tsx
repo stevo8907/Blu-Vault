@@ -127,7 +127,12 @@ export const MediaCard: React.FC<MediaCardProps> = ({
           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
           loading="lazy"
           onError={(e) => {
-            (e.target as HTMLElement).setAttribute('src', 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=500&auto=format&fit=crop&q=80');
+            const el = e.target as HTMLImageElement;
+            const typeSub = item.type === 'tv' || item.type === 'anime' ? 'tv' : item.type === 'game' ? 'games' : 'movies';
+            const cacheUrl = `/api/cache/${typeSub}/${item.id}/poster`;
+            if (!el.src.includes(cacheUrl) && !el.src.includes(`/api/cache/media/${item.id}/poster`)) {
+              el.src = cacheUrl;
+            }
           }}
         />
 

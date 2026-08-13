@@ -1,8 +1,35 @@
 import React, { useState, useEffect } from 'react';
-import { BarChart3, Disc, DollarSign, Clock, MapPin, Sparkles, Film, Tv, Gamepad2, ShieldCheck, Box, Coins, Bookmark } from 'lucide-react';
+import { 
+  BarChart3, 
+  Disc, 
+  DollarSign, 
+  Clock, 
+  MapPin, 
+  Sparkles, 
+  Film, 
+  Tv, 
+  Gamepad2, 
+  ShieldCheck, 
+  Box, 
+  Coins, 
+  Bookmark,
+  Database,
+  HardDrive,
+  Folder,
+  Tag,
+  Server,
+  RefreshCw
+} from 'lucide-react';
 import { MediaItem } from '../types';
 import { formatPrice, getSavedCurrencyCode } from '../lib/currency';
 import { isCompleteTvSeries } from '../lib/tvUtils';
+import { 
+  getSavedVaultName, 
+  getSavedVaultLocation, 
+  getSavedConfigDirPath, 
+  fetchSystemPaths, 
+  SystemPathsInfo 
+} from '../lib/vaultConfig';
 
 interface VaultStatsViewProps {
   mediaItems: MediaItem[];
@@ -10,11 +37,44 @@ interface VaultStatsViewProps {
 
 export const VaultStatsView: React.FC<VaultStatsViewProps> = ({ mediaItems }) => {
   const [currencyCode, setCurrencyCode] = useState(getSavedCurrencyCode());
+  const [vaultName, setVaultName] = useState(getSavedVaultName());
+  const [vaultLocation, setVaultLocation] = useState(getSavedVaultLocation());
+  const [configDirPath, setConfigDirPath] = useState(getSavedConfigDirPath());
+  const [systemPaths, setSystemPaths] = useState<SystemPathsInfo | null>(null);
+  const [isLoadingPaths, setIsLoadingPaths] = useState(false);
+
+  const loadPaths = async () => {
+    setIsLoadingPaths(true);
+    try {
+      const data = await fetchSystemPaths();
+      setSystemPaths(data);
+      if (data.vaultName) setVaultName(data.vaultName);
+      if (data.vaultLocation) setVaultLocation(data.vaultLocation);
+      if (data.configDirPath) setConfigDirPath(data.configDirPath);
+    } catch (e) {
+      console.warn('Could not load system paths:', e);
+    } finally {
+      setIsLoadingPaths(false);
+    }
+  };
 
   useEffect(() => {
+    loadPaths();
     const handleCurrencyChange = () => setCurrencyCode(getSavedCurrencyCode());
+    const handleConfigChange = () => {
+      setVaultName(getSavedVaultName());
+      setVaultLocation(getSavedVaultLocation());
+      setConfigDirPath(getSavedConfigDirPath());
+      loadPaths();
+    };
+
     window.addEventListener('bluvault_currency_changed', handleCurrencyChange);
-    return () => window.removeEventListener('bluvault_currency_changed', handleCurrencyChange);
+    window.addEventListener('bluvault_vault_config_updated', handleConfigChange);
+
+    return () => {
+      window.removeEventListener('bluvault_currency_changed', handleCurrencyChange);
+      window.removeEventListener('bluvault_vault_config_updated', handleConfigChange);
+    };
   }, []);
 
   const ownedItems = mediaItems.filter(m => !m.isWishlist);
@@ -57,12 +117,25 @@ export const VaultStatsView: React.FC<VaultStatsViewProps> = ({ mediaItems }) =>
             <BarChart3 className="w-8 h-8" />
           </div>
           <div>
-            <h2 className="text-2xl font-black text-white tracking-wide">Blu-Vault Analytics & Shelf Insights</h2>
-            <p className="text-xs text-slate-400 font-mono">
-              Complete physical disc metrics, financial valuation, and shelf distribution
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <h2 className="text-2xl font-black text-white tracking-wide">{vaultName} Analytics</h2>
+              <span className="px-2.5 py-0.5 rounded-full bg-indigo-950/80 text-indigo-300 border border-indigo-700/50 text-[11px] font-mono font-bold flex items-center gap-1.5">
+                <MapPin className="w-3 h-3 text-indigo-400" /> {vaultLocation}
+              </span>
+            </div>
+            <p className="text-xs text-slate-400 font-mono mt-1">
+              Physical disc metrics, collection valuation, disk storage footprint, and shelf distribution
             </p>
           </div>
         </div>
+
+        <button
+          onClick={loadPaths}
+          className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 text-xs font-bold font-mono flex items-center gap-2 transition-all"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 ${isLoadingPaths ? 'animate-spin' : ''}`} />
+          <span>Refresh Metrics</span>
+        </button>
       </div>
 
       {/* TOP SUMMARY STAT CARDS */}
@@ -112,6 +185,94 @@ export const VaultStatsView: React.FC<VaultStatsViewProps> = ({ mediaItems }) =>
           </div>
           <div className="text-3xl font-black text-purple-300 font-mono">{totalWishlist}</div>
           <p className="text-[11px] text-purple-400/80 font-mono">Desired Media Items</p>
+        </div>
+      </div>
+
+      {/* STORAGE & DIRECTORY STATISTICS CARD */}
+      <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 space-y-4">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <div>
+            <h3 className="font-extrabold text-base text-white flex items-center gap-2">
+              <Folder className="w-5 h-5 text-purple-400" /> Storage & Config Directory Diagnostics
+            </h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Live location and disk footprints for database records, automatic backups, and cached artwork
+            </p>
+          </div>
+          <div className="px-3 py-1 rounded-xl bg-purple-950/80 border border-purple-800/80 text-purple-300 font-mono text-xs font-bold flex items-center gap-2">
+            <span>Config Path:</span>
+            <span className="text-white bg-slate-950 px-2 py-0.5 rounded border border-purple-700/50">
+              {configDirPath || '/config'}
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {/* Databases */}
+          <div className="p-4 rounded-2xl bg-slate-950/80 border border-indigo-900/40 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-indigo-300 flex items-center gap-1.5 font-mono">
+                <Database className="w-4 h-4 text-indigo-400" /> Segmented Databases
+              </span>
+              <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 text-[10px] font-mono font-bold">
+                Active
+              </span>
+            </div>
+            <div className="text-[11px] text-slate-400 space-y-1 font-mono">
+              <div className="text-white flex justify-between">
+                <span>bluvault-system.json</span>
+                <span className="text-indigo-300">Users & API Keys</span>
+              </div>
+              <div className="text-white flex justify-between">
+                <span>bluvault-vault.json</span>
+                <span className="text-cyan-300">{totalItems} Media Items</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Backups */}
+          <div className="p-4 rounded-2xl bg-slate-950/80 border border-cyan-900/40 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-cyan-300 flex items-center gap-1.5 font-mono">
+                <HardDrive className="w-4 h-4 text-cyan-400" /> Database Backups
+              </span>
+              <span className="px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800 text-[10px] font-mono font-bold">
+                {configDirPath}/backups/
+              </span>
+            </div>
+            <div className="text-[11px] text-slate-400 space-y-1 font-mono">
+              <div className="flex justify-between">
+                <span>Snapshots Available:</span>
+                <span className="text-white font-bold">{systemPaths?.stats?.backupCount ?? systemPaths?.backupSnapshotsCount ?? 0}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Automatic Retention:</span>
+                <span className="text-emerald-300">Enabled</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Cache */}
+          <div className="p-4 rounded-2xl bg-slate-950/80 border border-purple-900/40 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-purple-300 flex items-center gap-1.5 font-mono">
+                <Film className="w-4 h-4 text-purple-400" /> Cached Artwork
+              </span>
+              <span className="px-2 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800 text-[10px] font-mono font-bold">
+                {configDirPath}/cache/
+              </span>
+            </div>
+            <div className="text-[11px] text-slate-400 space-y-1 font-mono">
+              <div className="flex justify-between">
+                <span>Media Subdirectories:</span>
+                <span className="text-white">movies / tv / games</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Offline Support:</span>
+                <span className="text-emerald-300">Instant Local Serve</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -227,3 +388,4 @@ export const VaultStatsView: React.FC<VaultStatsViewProps> = ({ mediaItems }) =>
     </div>
   );
 };
+

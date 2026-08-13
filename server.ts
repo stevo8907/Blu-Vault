@@ -11,11 +11,512 @@ const PORT = 3000;
 
 app.use(express.json({ limit: '10mb' }));
 
-// Ensure data folder exists for database persistence
+// --- DYNAMIC STORAGE CONFIGURATION & PATH MANAGEMENT ---
+const RUNTIME_CONFIG_FILE = path.join(process.cwd(), '.bluvault-runtime.json');
+
+interface RuntimeConfig {
+  vaultName: string;
+  vaultLocation: string;
+  configDirPath: string;
+}
+
+function getRuntimeConfig(): RuntimeConfig {
+  let cfg: RuntimeConfig = {
+    vaultName: 'Blu-Vault',
+    vaultLocation: 'Home Server',
+    configDirPath: process.env.CONFIG_DIR || '/config'
+  };
+
+  if (fs.existsSync(RUNTIME_CONFIG_FILE)) {
+    try {
+      const content = fs.readFileSync(RUNTIME_CONFIG_FILE, 'utf-8');
+      const parsed = JSON.parse(content);
+      if (parsed.vaultName) cfg.vaultName = parsed.vaultName;
+      if (parsed.vaultLocation) cfg.vaultLocation = parsed.vaultLocation;
+      if (parsed.configDirPath) cfg.configDirPath = parsed.configDirPath;
+    } catch (e) {
+      console.warn('Failed reading runtime config:', e);
+    }
+  }
+  return cfg;
+}
+
+function saveRuntimeConfig(newCfg: Partial<RuntimeConfig>): RuntimeConfig {
+  const current = getRuntimeConfig();
+  const merged: RuntimeConfig = {
+    vaultName: (newCfg.vaultName || current.vaultName).trim() || 'Blu-Vault',
+    vaultLocation: (newCfg.vaultLocation || current.vaultLocation).trim() || 'Home Server',
+    configDirPath: (newCfg.configDirPath || current.configDirPath).trim() || '/config'
+  };
+  try {
+    fs.writeFileSync(RUNTIME_CONFIG_FILE, JSON.stringify(merged, null, 2), 'utf-8');
+  } catch (e) {
+    console.warn('Failed writing runtime config file:', e);
+  }
+  if (merged.configDirPath) {
+    process.env.CONFIG_DIR = merged.configDirPath;
+  }
+  return merged;
+}
+
+function resolveDiskPath(userPath: string): string {
+  const target = (userPath || '/config').trim();
+  
+  if (path.isAbsolute(target)) {
+    try {
+      if (!fs.existsSync(target)) {
+        fs.mkdirSync(target, { recursive: true });
+      }
+      const testFile = path.join(target, '.write-test-' + Date.now());
+      fs.writeFileSync(testFile, 'ok', 'utf-8');
+      fs.unlinkSync(testFile);
+      return target;
+    } catch {
+      // In restricted sandbox environments where root /config is not writable, map safely
+      const safeRel = target.replace(/^[\/\\]+/, '') || 'config';
+      const localTarget = path.join(process.cwd(), safeRel);
+      if (!fs.existsSync(localTarget)) {
+        fs.mkdirSync(localTarget, { recursive: true });
+      }
+      return localTarget;
+    }
+  } else {
+    const relTarget = path.join(process.cwd(), target || 'data');
+    if (!fs.existsSync(relTarget)) {
+      fs.mkdirSync(relTarget, { recursive: true });
+    }
+    return relTarget;
+  }
+}
+
+export function getStoragePaths() {
+  const runtimeCfg = getRuntimeConfig();
+  const rawPath = runtimeCfg.configDirPath || '/config';
+  const resolvedDir = resolveDiskPath(rawPath);
+
+  const backupDir = path.join(resolvedDir, 'backups');
+  const cacheDir = path.join(resolvedDir, 'cache');
+  const cacheMoviesDir = path.join(cacheDir, 'movies');
+  const cacheTvDir = path.join(cacheDir, 'tv');
+  const cacheGamesDir = path.join(cacheDir, 'games');
+  const cacheMiscDir = path.join(cacheDir, 'misc');
+  const metadataCacheFile = path.join(cacheDir, 'metadata.json');
+
+  const systemDbFile = path.join(resolvedDir, 'bluvault-system.json');
+  const vaultDbFile = path.join(resolvedDir, 'bluvault-vault.json');
+  const legacyDbFile = path.join(resolvedDir, 'bluvault-db.json');
+  const autoBackupConfigFile = path.join(resolvedDir, 'auto-backup-config.json');
+
+  // Ensure all storage subdirectories exist
+  [resolvedDir, backupDir, cacheDir, cacheMoviesDir, cacheTvDir, cacheGamesDir, cacheMiscDir].forEach(d => {
+    if (!fs.existsSync(d)) {
+      try { fs.mkdirSync(d, { recursive: true }); } catch {}
+    }
+  });
+
+  // If newly selected directory is empty but legacy /data exists, copy over database files
+  const defaultDataDir = path.join(process.cwd(), 'data');
+  if (resolvedDir !== defaultDataDir) {
+    try {
+      const defaultVault = path.join(defaultDataDir, 'bluvault-vault.json');
+      const defaultSys = path.join(defaultDataDir, 'bluvault-system.json');
+      if (fs.existsSync(defaultVault) && !fs.existsSync(vaultDbFile)) {
+        fs.copyFileSync(defaultVault, vaultDbFile);
+      }
+      if (fs.existsSync(defaultSys) && !fs.existsSync(systemDbFile)) {
+        fs.copyFileSync(defaultSys, systemDbFile);
+      }
+    } catch (e) {
+      console.warn('Notice copying seed data to new config path:', e);
+    }
+  }
+
+  return {
+    rawPath,
+    resolvedDir,
+    systemDbFile,
+    vaultDbFile,
+    legacyDbFile,
+    autoBackupConfigFile,
+    backupDir,
+    cacheDir,
+    cacheMoviesDir,
+    cacheTvDir,
+    cacheGamesDir,
+    cacheMiscDir,
+    metadataCacheFile,
+    vaultName: runtimeCfg.vaultName,
+    vaultLocation: runtimeCfg.vaultLocation
+  };
+}
+
+// Global accessor aliases for initial legacy compatibility
 const DATA_DIR = path.join(process.cwd(), 'data');
 const SYSTEM_DB_FILE = path.join(DATA_DIR, 'bluvault-system.json');
 const VAULT_DB_FILE = path.join(DATA_DIR, 'bluvault-vault.json');
 const LEGACY_DB_FILE = path.join(DATA_DIR, 'bluvault-db.json');
+
+// --- CACHING SYSTEM (STRUCTURED PER-ITEM DIRECTORIES & METADATA) ---
+const CACHE_DIR = path.join(DATA_DIR, 'cache');
+const CACHE_MOVIES_DIR = path.join(CACHE_DIR, 'movies');
+const CACHE_TV_DIR = path.join(CACHE_DIR, 'tv');
+const CACHE_GAMES_DIR = path.join(CACHE_DIR, 'games');
+const CACHE_MISC_DIR = path.join(CACHE_DIR, 'misc');
+const METADATA_CACHE_FILE = path.join(CACHE_DIR, 'metadata.json');
+
+interface MetadataCacheStore {
+  [key: string]: {
+    timestamp: number;
+    data: any;
+  };
+}
+
+let metadataCacheStore: MetadataCacheStore = {};
+
+function loadMetadataCache(): MetadataCacheStore {
+  const paths = getStoragePaths();
+  try {
+    if (fs.existsSync(paths.metadataCacheFile)) {
+      const content = fs.readFileSync(paths.metadataCacheFile, 'utf-8');
+      return JSON.parse(content) || {};
+    }
+  } catch (err) {
+    console.error('Failed to load metadata cache:', err);
+  }
+  return {};
+}
+
+metadataCacheStore = loadMetadataCache();
+
+let saveMetadataCacheTimeout: NodeJS.Timeout | null = null;
+function saveMetadataCache() {
+  if (saveMetadataCacheTimeout) clearTimeout(saveMetadataCacheTimeout);
+  saveMetadataCacheTimeout = setTimeout(() => {
+    const paths = getStoragePaths();
+    try {
+      if (!fs.existsSync(paths.cacheDir)) {
+        fs.mkdirSync(paths.cacheDir, { recursive: true });
+      }
+      fs.writeFileSync(paths.metadataCacheFile, JSON.stringify(metadataCacheStore, null, 2), 'utf-8');
+    } catch (err) {
+      console.error('Failed to save metadata cache:', err);
+    }
+  }, 1000);
+}
+
+function getMetadataFromCache(key: string, maxAgeDays = 30): any | null {
+  const item = metadataCacheStore[key];
+  if (!item) return null;
+  const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
+  if (Date.now() - item.timestamp > maxAgeMs) {
+    delete metadataCacheStore[key];
+    saveMetadataCache();
+    return null;
+  }
+  return item.data;
+}
+
+function setMetadataToCache(key: string, data: any) {
+  if (!key || data === undefined || data === null) return;
+  metadataCacheStore[key] = {
+    timestamp: Date.now(),
+    data
+  };
+  saveMetadataCache();
+}
+
+function sanitizeFolderName(name: string): string {
+  return (name || 'Untitled')
+    .replace(/[/\\?%*:|"<>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .substring(0, 80);
+}
+
+function getMediaCacheDir(item: { id?: string; type?: string; title?: string; releaseYear?: number }): string {
+  const paths = getStoragePaths();
+  const typeKey = (item.type || 'movie').toLowerCase();
+  const baseSubDir = (typeKey === 'tv' || typeKey === 'anime') 
+    ? paths.cacheTvDir 
+    : typeKey === 'game' 
+      ? paths.cacheGamesDir 
+      : paths.cacheMoviesDir;
+
+  const cleanTitle = sanitizeFolderName(item.title || 'Untitled');
+  const yearSuffix = item.releaseYear ? ` (${item.releaseYear})` : '';
+  const idSuffix = item.id ? ` [${item.id}]` : '';
+  const folderName = `${cleanTitle}${yearSuffix}${idSuffix}`;
+
+  const mediaDir = path.join(baseSubDir, folderName);
+  if (!fs.existsSync(mediaDir)) {
+    fs.mkdirSync(mediaDir, { recursive: true });
+  }
+  return mediaDir;
+}
+
+function findMediaCacheDirById(id: string): string | null {
+  if (!id) return null;
+  const paths = getStoragePaths();
+  const searchDirs = [paths.cacheMoviesDir, paths.cacheTvDir, paths.cacheGamesDir];
+  for (const parent of searchDirs) {
+    if (fs.existsSync(parent)) {
+      const folders = fs.readdirSync(parent);
+      for (const folder of folders) {
+        if (folder.includes(`[${id}]`)) {
+          return path.join(parent, folder);
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function getImageHashFilename(imageUrl: string): string {
+  const cleanUrl = imageUrl.split('?')[0];
+  const extMatch = cleanUrl.match(/\.(jpg|jpeg|png|webp|gif|svg)$/i);
+  const ext = extMatch ? extMatch[1].toLowerCase() : 'jpg';
+  const hash = crypto.createHash('md5').update(imageUrl).digest('hex');
+  return `${hash}.${ext}`;
+}
+
+function getUrlExtension(url: string): string {
+  const clean = url.split('?')[0];
+  const match = clean.match(/\.(jpg|jpeg|png|webp|gif|svg)$/i);
+  return match ? match[1].toLowerCase() : 'jpg';
+}
+
+async function cacheMediaArtworkAsync(item: MediaItem): Promise<{
+  cachedFiles: string[];
+  directory: string;
+}> {
+  const mediaDir = getMediaCacheDir(item);
+  const cachedFiles: string[] = [];
+
+  // Write comprehensive metadata info.json inside the item's directory
+  try {
+    const infoFile = path.join(mediaDir, 'info.json');
+    const infoData = {
+      id: item.id,
+      title: item.title,
+      originalTitle: item.originalTitle,
+      type: item.type,
+      format: item.format,
+      edition: item.edition,
+      releaseYear: item.releaseYear,
+      director: item.director,
+      cast: item.cast,
+      genres: item.genres,
+      rating: item.rating,
+      runtimeMinutes: item.runtimeMinutes,
+      numberOfSeasons: item.numberOfSeasons,
+      numberOfEpisodes: item.numberOfEpisodes,
+      barcode: item.barcode,
+      shelfLocation: item.shelfLocation,
+      addedAt: item.addedAt,
+      cachedAt: new Date().toISOString(),
+      originalUrls: {
+        posterUrl: item.posterUrl,
+        backdropUrl: item.backdropUrl,
+        collectionPoster: item.collectionInfo?.posterUrl,
+        collectionBackdrop: item.collectionInfo?.backdropUrl
+      }
+    };
+    fs.writeFileSync(infoFile, JSON.stringify(infoData, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn(`Failed to write info.json for ${item.title}:`, err);
+  }
+
+  const downloadToTarget = async (url: string | undefined, baseName: string, isBackdrop = false, label?: string) => {
+    // Check if any existing file with this baseName exists
+    const existing = findArtworkFileInDir(mediaDir, baseName);
+    if (existing) {
+      cachedFiles.push(path.basename(existing));
+      return;
+    }
+
+    if (url && url.startsWith('http')) {
+      const ext = getUrlExtension(url);
+      const filename = `${baseName}.${ext}`;
+      const targetPath = path.join(mediaDir, filename);
+
+      try {
+        const res = await fetch(url, { headers: { 'User-Agent': 'BluVault-Cache/1.0' } });
+        if (res.ok) {
+          const buf = Buffer.from(await res.arrayBuffer());
+          fs.writeFileSync(targetPath, buf);
+          cachedFiles.push(filename);
+          return;
+        }
+      } catch (err) {
+        console.warn(`Failed to fetch remote artwork ${url} for ${item.title} (generating offline SVG):`, err);
+      }
+    }
+
+    // Offline Fallback Generator: Write local SVG artwork if not present
+    try {
+      const svgFilename = `${baseName}.svg`;
+      const svgPath = path.join(mediaDir, svgFilename);
+      const svgContent = generateOfflineArtworkSvg({
+        title: item.title,
+        type: item.type,
+        releaseYear: item.releaseYear,
+        format: item.format,
+        label,
+        isBackdrop
+      });
+      fs.writeFileSync(svgPath, svgContent, 'utf-8');
+      cachedFiles.push(svgFilename);
+    } catch (e) {
+      console.warn(`Failed to write offline SVG artwork for ${item.title}:`, e);
+    }
+  };
+
+  // 1. Poster
+  await downloadToTarget(item.posterUrl, 'poster', false);
+
+  // 2. Backdrop
+  await downloadToTarget(item.backdropUrl || item.posterUrl, 'backdrop', true);
+
+  // 3. Collection artwork
+  if (item.collectionInfo?.posterUrl) {
+    await downloadToTarget(item.collectionInfo.posterUrl, 'collection-poster', false, item.collectionInfo.name);
+  }
+  if (item.collectionInfo?.backdropUrl) {
+    await downloadToTarget(item.collectionInfo.backdropUrl, 'collection-backdrop', true, item.collectionInfo.name);
+  }
+
+  // 4. Seasons artwork (for TV Series)
+  if (item.seasons && Array.isArray(item.seasons)) {
+    for (const season of item.seasons) {
+      const sLabel = season.name || (season.seasonNumber === 0 ? 'Specials' : `Season ${season.seasonNumber}`);
+      await downloadToTarget(season.posterUrl || item.posterUrl, `season-${season.seasonNumber}-poster`, false, sLabel);
+    }
+  }
+
+  return { cachedFiles, directory: mediaDir };
+}
+
+function findArtworkFileInDir(dir: string, baseName: string): string | null {
+  if (!fs.existsSync(dir)) return null;
+  const exactPath = path.join(dir, baseName);
+  if (fs.existsSync(exactPath) && fs.statSync(exactPath).isFile()) return exactPath;
+
+  const extensions = ['.jpg', '.jpeg', '.png', '.webp', '.svg', '.gif'];
+  for (const ext of extensions) {
+    const candidate = path.join(dir, `${baseName}${ext}`);
+    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function generateOfflineArtworkSvg(params: {
+  title: string;
+  type?: string;
+  releaseYear?: number;
+  format?: string;
+  label?: string;
+  isBackdrop?: boolean;
+}): string {
+  const { title, type = 'movie', releaseYear, format = '4K Ultra-HD', label, isBackdrop = false } = params;
+  const width = isBackdrop ? 1280 : 500;
+  const height = isBackdrop ? 720 : 750;
+  const safeTitle = (title || 'Blu-Vault Media')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+  
+  const safeLabel = (label || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  const safeFormat = (format || 'BLU-RAY')
+    .toUpperCase()
+    .replace(/&/g, '&amp;');
+
+  const isTv = type === 'tv' || type === 'anime';
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#090d16" />
+      <stop offset="50%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#020617" />
+    </linearGradient>
+    <radialGradient id="discGlow" cx="50%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="${isTv ? '#6366f1' : '#0ea5e9'}" stop-opacity="0.25" />
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="goldBadge" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#f59e0b" />
+      <stop offset="100%" stop-color="#fbbf24" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="${width}" height="${height}" fill="url(#bgGrad)" />
+  <rect width="${width}" height="${height}" fill="url(#discGlow)" />
+
+  <!-- Case Spine line -->
+  <rect x="12" y="12" width="${width - 24}" height="${height - 24}" rx="16" fill="none" stroke="#1e293b" stroke-width="2" />
+  <rect x="16" y="16" width="${width - 32}" height="${height - 32}" rx="12" fill="none" stroke="#334155" stroke-width="1" stroke-opacity="0.4" />
+
+  <!-- Header Format Badge -->
+  <g transform="translate(${width / 2}, ${isBackdrop ? 60 : 70})">
+    <rect x="-90" y="-18" width="180" height="36" rx="8" fill="#020617" stroke="${isTv ? '#818cf8' : '#38bdf8'}" stroke-width="1.5" />
+    <text text-anchor="middle" y="6" fill="${isTv ? '#c7d2fe' : '#bae6fd'}" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="900" letter-spacing="2">${safeFormat}</text>
+  </g>
+
+  <!-- Center Artwork Iconography -->
+  <g transform="translate(${width / 2}, ${isBackdrop ? 320 : 330})">
+    <circle r="${isBackdrop ? 110 : 90}" fill="none" stroke="#1e293b" stroke-width="3" />
+    <circle r="${isBackdrop ? 90 : 70}" fill="none" stroke="${isTv ? '#4f46e5' : '#0284c7'}" stroke-width="2" stroke-opacity="0.6" stroke-dasharray="8 6" />
+    <circle r="${isBackdrop ? 36 : 28}" fill="#0f172a" stroke="#334155" stroke-width="3" />
+    <circle r="${isBackdrop ? 14 : 10}" fill="${isTv ? '#818cf8' : '#38bdf8'}" />
+  </g>
+
+  ${safeLabel ? `
+  <g transform="translate(${width / 2}, ${isBackdrop ? 460 : 450})">
+    <rect x="-100" y="-16" width="200" height="32" rx="16" fill="url(#goldBadge)" />
+    <text text-anchor="middle" y="5" fill="#0f172a" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="900" letter-spacing="1">${safeLabel.toUpperCase()}</text>
+  </g>` : ''}
+
+  <!-- Title and Info -->
+  <g transform="translate(${width / 2}, ${height - (isBackdrop ? 120 : 150)})">
+    <text text-anchor="middle" fill="#ffffff" font-family="system-ui, -apple-system, sans-serif" font-size="${isBackdrop ? 36 : 28}" font-weight="900" letter-spacing="0.5">
+      ${safeTitle.length > 28 ? safeTitle.substring(0, 26) + '...' : safeTitle}
+    </text>
+    <text text-anchor="middle" y="${isBackdrop ? 42 : 36}" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="${isBackdrop ? 18 : 15}" font-weight="600" letter-spacing="1">
+      ${releaseYear ? releaseYear + ' • ' : ''}LOCAL VAULT ARTWORK
+    </text>
+  </g>
+</svg>`;
+}
+
+function resolveMediaArtworkUrls(item: MediaItem): MediaItem {
+  if (!item || !item.id) return item;
+  const isTv = item.type === 'tv' || item.type === 'anime';
+  const isGame = item.type === 'game';
+  const typeSubPath = isTv ? 'tv' : isGame ? 'games' : 'movies';
+
+  return {
+    ...item,
+    posterUrl: `/api/cache/${typeSubPath}/${item.id}/poster`,
+    backdropUrl: item.backdropUrl ? `/api/cache/${typeSubPath}/${item.id}/backdrop` : `/api/cache/${typeSubPath}/${item.id}/poster`,
+    seasons: item.seasons ? item.seasons.map(s => ({
+      ...s,
+      posterUrl: `/api/cache/${typeSubPath}/${item.id}/season-${s.seasonNumber}-poster`
+    })) : [],
+    collectionInfo: item.collectionInfo ? {
+      ...item.collectionInfo,
+      posterUrl: `/api/cache/${typeSubPath}/${item.id}/collection-poster`,
+      backdropUrl: item.collectionInfo.backdropUrl ? `/api/cache/${typeSubPath}/${item.id}/collection-backdrop` : `/api/cache/${typeSubPath}/${item.id}/collection-poster`
+    } : undefined
+  };
+}
 
 export interface UserWithAuth extends User {
   passwordHash?: string;
@@ -122,31 +623,32 @@ function sanitizeUser(user: UserWithAuth): User {
 
 // Helper to load or initialize segmented database
 function getDatabase(): DatabaseSchema {
+  const paths = getStoragePaths();
   try {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
+    if (!fs.existsSync(paths.resolvedDir)) {
+      fs.mkdirSync(paths.resolvedDir, { recursive: true });
     }
 
-    // Auto-migrate legacy unified database file into segmented system & vault files
-    if (fs.existsSync(LEGACY_DB_FILE) && (!fs.existsSync(SYSTEM_DB_FILE) || !fs.existsSync(VAULT_DB_FILE))) {
+    // Auto-migrate legacy unified database file into segmented system & vault files if found
+    if (fs.existsSync(paths.legacyDbFile) && (!fs.existsSync(paths.systemDbFile) || !fs.existsSync(paths.vaultDbFile))) {
       try {
-        const legacyData = fs.readFileSync(LEGACY_DB_FILE, 'utf-8');
+        const legacyData = fs.readFileSync(paths.legacyDbFile, 'utf-8');
         const legacyParsed = JSON.parse(legacyData);
-        if (!fs.existsSync(SYSTEM_DB_FILE)) {
+        if (!fs.existsSync(paths.systemDbFile)) {
           const sysObj: SystemDatabaseSchema = {
             users: Array.isArray(legacyParsed.users) ? legacyParsed.users : [],
             apiConfigs: Array.isArray(legacyParsed.apiConfigs) && legacyParsed.apiConfigs.length > 0 ? legacyParsed.apiConfigs : DEFAULT_APIS
           };
-          fs.writeFileSync(SYSTEM_DB_FILE, JSON.stringify(sysObj, null, 2), 'utf-8');
+          fs.writeFileSync(paths.systemDbFile, JSON.stringify(sysObj, null, 2), 'utf-8');
         }
-        if (!fs.existsSync(VAULT_DB_FILE)) {
+        if (!fs.existsSync(paths.vaultDbFile)) {
           const vaultObj: VaultDatabaseSchema = {
             media: Array.isArray(legacyParsed.media) ? legacyParsed.media : SEED_MEDIA
           };
-          fs.writeFileSync(VAULT_DB_FILE, JSON.stringify(vaultObj, null, 2), 'utf-8');
+          fs.writeFileSync(paths.vaultDbFile, JSON.stringify(vaultObj, null, 2), 'utf-8');
         }
         // Backup legacy file
-        fs.renameSync(LEGACY_DB_FILE, LEGACY_DB_FILE + '.bak');
+        fs.renameSync(paths.legacyDbFile, paths.legacyDbFile + '.bak');
         console.log('Successfully migrated legacy bluvault-db.json into segmented bluvault-system.json and bluvault-vault.json');
       } catch (e) {
         console.error('Failed migrating legacy DB file:', e);
@@ -155,11 +657,11 @@ function getDatabase(): DatabaseSchema {
 
     // 1. Read System Database (Users & API Configs)
     let systemData: SystemDatabaseSchema = { users: [], apiConfigs: DEFAULT_APIS };
-    if (!fs.existsSync(SYSTEM_DB_FILE)) {
-      fs.writeFileSync(SYSTEM_DB_FILE, JSON.stringify(systemData, null, 2), 'utf-8');
+    if (!fs.existsSync(paths.systemDbFile)) {
+      fs.writeFileSync(paths.systemDbFile, JSON.stringify(systemData, null, 2), 'utf-8');
     } else {
       try {
-        const parsedSys = JSON.parse(fs.readFileSync(SYSTEM_DB_FILE, 'utf-8'));
+        const parsedSys = JSON.parse(fs.readFileSync(paths.systemDbFile, 'utf-8'));
         systemData = {
           users: Array.isArray(parsedSys.users) ? parsedSys.users : [],
           apiConfigs: Array.isArray(parsedSys.apiConfigs) && parsedSys.apiConfigs.length > 0 ? parsedSys.apiConfigs : DEFAULT_APIS
@@ -171,11 +673,11 @@ function getDatabase(): DatabaseSchema {
 
     // 2. Read Vault Database (Media items)
     let vaultData: VaultDatabaseSchema = { media: SEED_MEDIA };
-    if (!fs.existsSync(VAULT_DB_FILE)) {
-      fs.writeFileSync(VAULT_DB_FILE, JSON.stringify(vaultData, null, 2), 'utf-8');
+    if (!fs.existsSync(paths.vaultDbFile)) {
+      fs.writeFileSync(paths.vaultDbFile, JSON.stringify(vaultData, null, 2), 'utf-8');
     } else {
       try {
-        const parsedVault = JSON.parse(fs.readFileSync(VAULT_DB_FILE, 'utf-8'));
+        const parsedVault = JSON.parse(fs.readFileSync(paths.vaultDbFile, 'utf-8'));
         vaultData = {
           media: Array.isArray(parsedVault.media) ? parsedVault.media : SEED_MEDIA
         };
@@ -216,28 +718,498 @@ function getDatabase(): DatabaseSchema {
 }
 
 function saveDatabase(db: DatabaseSchema) {
+  const paths = getStoragePaths();
   try {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
+    if (!fs.existsSync(paths.resolvedDir)) {
+      fs.mkdirSync(paths.resolvedDir, { recursive: true });
     }
     // Save system segment
     const systemSegment: SystemDatabaseSchema = {
       users: db.users || [],
       apiConfigs: db.apiConfigs || DEFAULT_APIS
     };
-    fs.writeFileSync(SYSTEM_DB_FILE, JSON.stringify(systemSegment, null, 2), 'utf-8');
+    fs.writeFileSync(paths.systemDbFile, JSON.stringify(systemSegment, null, 2), 'utf-8');
 
     // Save vault segment
     const vaultSegment: VaultDatabaseSchema = {
       media: db.media || []
     };
-    fs.writeFileSync(VAULT_DB_FILE, JSON.stringify(vaultSegment, null, 2), 'utf-8');
+    fs.writeFileSync(paths.vaultDbFile, JSON.stringify(vaultSegment, null, 2), 'utf-8');
   } catch (err) {
     console.error('Failed to save segmented database files:', err);
   }
 }
 
 // REST API ROUTES
+
+// --- CACHE & IMAGE PROXY ENDPOINTS ---
+
+// Image Cache Proxy & Local Disk File Server
+app.get('/api/cache/image', async (req, res) => {
+  const paths = getStoragePaths();
+  const imageUrl = req.query.url as string;
+  const mediaId = req.query.mediaId as string;
+  if (!imageUrl) {
+    return res.status(400).send('Image URL parameter required');
+  }
+
+  // Handle data URIs directly
+  if (imageUrl.startsWith('data:')) {
+    return res.redirect(imageUrl);
+  }
+
+  const filename = getImageHashFilename(imageUrl);
+  
+  // 1. Check if associated with a specific media item
+  const db = getDatabase();
+  let targetDir = paths.cacheMiscDir;
+
+  let matchedMedia = mediaId ? db.media.find(m => m.id === mediaId) : undefined;
+  if (!matchedMedia) {
+    // Check if any media item references this imageUrl
+    matchedMedia = db.media.find(m => 
+      m.posterUrl === imageUrl || 
+      m.backdropUrl === imageUrl || 
+      m.collectionInfo?.posterUrl === imageUrl || 
+      m.collectionInfo?.backdropUrl === imageUrl ||
+      (m.seasons && m.seasons.some(s => s.posterUrl === imageUrl))
+    );
+  }
+
+  if (matchedMedia) {
+    targetDir = getMediaCacheDir(matchedMedia);
+  }
+
+  const localPath = path.join(targetDir, filename);
+  const miscPath = path.join(paths.cacheMiscDir, filename);
+
+  // Check if image is already cached on disk in targetDir or miscPath
+  if (fs.existsSync(localPath)) {
+    return res.sendFile(localPath, {
+      maxAge: '365d',
+      headers: {
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'X-Cache-Status': 'HIT'
+      }
+    });
+  }
+
+  if (fs.existsSync(miscPath)) {
+    return res.sendFile(miscPath, {
+      maxAge: '365d',
+      headers: {
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'X-Cache-Status': 'HIT'
+      }
+    });
+  }
+
+  // Download and write to local disk cache
+  try {
+    const response = await fetch(imageUrl, {
+      headers: { 'User-Agent': 'BluVault-ImageCache/1.0' }
+    });
+
+    if (!response.ok) {
+      return res.redirect(imageUrl);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    fs.writeFileSync(localPath, buffer);
+
+    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    res.set('X-Cache-Status', 'MISS');
+    const contentType = response.headers.get('content-type') || 'image/jpeg';
+    res.set('Content-Type', contentType);
+    return res.send(buffer);
+  } catch (err) {
+    console.warn(`Image download failed for ${imageUrl}:`, err);
+    return res.redirect(imageUrl);
+  }
+});
+
+// Helper function to serve media artwork directly from type-specific cache directories
+async function handleMediaArtworkRequest(req: any, res: any, expectedType?: 'tv' | 'movie' | 'game') {
+  const { id, filename } = req.params;
+  const db = getDatabase();
+  const matchedItem = db.media.find(m => m.id === id);
+
+  let mediaDir = findMediaCacheDirById(id);
+  if (!mediaDir && matchedItem) {
+    mediaDir = getMediaCacheDir(matchedItem);
+  }
+
+  if (!mediaDir) {
+    const fallbackSvg = generateOfflineArtworkSvg({
+      title: 'Blu-Vault Media',
+      format: 'LOCAL STORAGE'
+    });
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    return res.send(fallbackSvg);
+  }
+
+  const safeFilename = path.basename(filename);
+  const baseName = safeFilename.replace(/\.(jpg|jpeg|png|webp|gif|svg)$/i, '');
+
+  // 1. Check exact match or baseName match on local disk
+  const existingFile = findArtworkFileInDir(mediaDir, baseName);
+  if (existingFile && fs.existsSync(existingFile)) {
+    const ext = path.extname(existingFile).toLowerCase();
+    const contentType = ext === '.svg' ? 'image/svg+xml' : ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+    res.setHeader('Content-Type', contentType);
+    return res.sendFile(existingFile, {
+      maxAge: '365d',
+      headers: {
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'X-Cache-Status': 'HIT'
+      }
+    });
+  }
+
+  // 2. Not yet on disk: try to download if remote URL exists on item
+  if (matchedItem) {
+    let targetRemoteUrl: string | undefined;
+    let isBackdrop = false;
+    let label: string | undefined;
+
+    if (baseName.startsWith('season-')) {
+      const sNum = parseInt(baseName.replace('season-', '').replace('-poster', ''), 10);
+      const targetSeason = matchedItem.seasons?.find(s => s.seasonNumber === sNum);
+      targetRemoteUrl = targetSeason?.posterUrl || matchedItem.posterUrl;
+      label = targetSeason?.name || `Season ${sNum}`;
+    } else if (baseName.includes('backdrop')) {
+      targetRemoteUrl = baseName.includes('collection') 
+        ? (matchedItem.collectionInfo?.backdropUrl || matchedItem.backdropUrl)
+        : (matchedItem.backdropUrl || matchedItem.posterUrl);
+      isBackdrop = true;
+      if (baseName.includes('collection')) label = matchedItem.collectionInfo?.name;
+    } else if (baseName.includes('collection')) {
+      targetRemoteUrl = matchedItem.collectionInfo?.posterUrl || matchedItem.posterUrl;
+      label = matchedItem.collectionInfo?.name;
+    } else {
+      targetRemoteUrl = matchedItem.posterUrl;
+    }
+
+    if (targetRemoteUrl && targetRemoteUrl.startsWith('http')) {
+      try {
+        const ext = getUrlExtension(targetRemoteUrl);
+        const savedPath = path.join(mediaDir, `${baseName}.${ext}`);
+        const response = await fetch(targetRemoteUrl, {
+          headers: { 'User-Agent': 'BluVault-ImageCache/1.0' }
+        });
+        if (response.ok) {
+          const buf = Buffer.from(await response.arrayBuffer());
+          fs.writeFileSync(savedPath, buf);
+          const contentType = response.headers.get('content-type') || (ext === '.png' ? 'image/png' : 'image/jpeg');
+          res.setHeader('Content-Type', contentType);
+          return res.sendFile(savedPath, {
+            maxAge: '365d',
+            headers: {
+              'Cache-Control': 'public, max-age=31536000, immutable',
+              'X-Cache-Status': 'MISS'
+            }
+          });
+        }
+      } catch (e) {
+        console.warn(`Could not fetch remote image for ${matchedItem.title} on demand:`, e);
+      }
+    }
+
+    // 3. Fallback: Save local SVG artwork to disk and serve
+    const svgPath = path.join(mediaDir, `${baseName}.svg`);
+    const svgContent = generateOfflineArtworkSvg({
+      title: matchedItem.title,
+      type: matchedItem.type,
+      releaseYear: matchedItem.releaseYear,
+      format: matchedItem.format,
+      label,
+      isBackdrop
+    });
+    try {
+      fs.writeFileSync(svgPath, svgContent, 'utf-8');
+    } catch (e) {}
+
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    return res.send(svgContent);
+  }
+
+  // 4. Default fallback if item not found in DB
+  const defaultSvg = generateOfflineArtworkSvg({
+    title: 'Offline Vault Media',
+    format: 'LOCAL STORAGE'
+  });
+  res.setHeader('Content-Type', 'image/svg+xml');
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  return res.send(defaultSvg);
+}
+
+// Category-specific Direct Cache Artwork Endpoints
+app.get('/api/cache/tv/:id/:filename', (req, res) => handleMediaArtworkRequest(req, res, 'tv'));
+app.get('/api/cache/movies/:id/:filename', (req, res) => handleMediaArtworkRequest(req, res, 'movie'));
+app.get('/api/cache/games/:id/:filename', (req, res) => handleMediaArtworkRequest(req, res, 'game'));
+app.get('/api/cache/media/:id/:filename', (req, res) => handleMediaArtworkRequest(req, res));
+
+// Cache Statistics & Diagnostics Endpoint
+app.get('/api/cache/stats', (req, res) => {
+  try {
+    const paths = getStoragePaths();
+    
+    // Ensure memory store stays synced with disk if file changed
+    if (fs.existsSync(paths.metadataCacheFile)) {
+      try {
+        const fileContent = fs.readFileSync(paths.metadataCacheFile, 'utf-8');
+        metadataCacheStore = JSON.parse(fileContent) || {};
+      } catch (e) {}
+    } else if (Object.keys(metadataCacheStore).length === 0) {
+      metadataCacheStore = {};
+    }
+
+    const metadataCount = Object.keys(metadataCacheStore).length;
+    let imageCount = 0;
+    let totalBytes = 0;
+    let movieDirs = 0;
+    let tvDirs = 0;
+    let gameDirs = 0;
+
+    function scanDir(dir: string) {
+      if (!fs.existsSync(dir)) return;
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            scanDir(fullPath);
+          } else if (entry.isFile()) {
+            if (/\.(jpg|jpeg|png|webp|gif|svg)$/i.test(entry.name)) {
+              imageCount++;
+            }
+            try {
+              const stat = fs.statSync(fullPath);
+              totalBytes += stat.size;
+            } catch (e) {}
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (fs.existsSync(paths.cacheMoviesDir)) {
+      try {
+        movieDirs = fs.readdirSync(paths.cacheMoviesDir).filter(f => {
+          try { return fs.statSync(path.join(paths.cacheMoviesDir, f)).isDirectory(); } catch { return false; }
+        }).length;
+      } catch (e) { movieDirs = 0; }
+    }
+    if (fs.existsSync(paths.cacheTvDir)) {
+      try {
+        tvDirs = fs.readdirSync(paths.cacheTvDir).filter(f => {
+          try { return fs.statSync(path.join(paths.cacheTvDir, f)).isDirectory(); } catch { return false; }
+        }).length;
+      } catch (e) { tvDirs = 0; }
+    }
+    if (fs.existsSync(paths.cacheGamesDir)) {
+      try {
+        gameDirs = fs.readdirSync(paths.cacheGamesDir).filter(f => {
+          try { return fs.statSync(path.join(paths.cacheGamesDir, f)).isDirectory(); } catch { return false; }
+        }).length;
+      } catch (e) { gameDirs = 0; }
+    }
+
+    if (fs.existsSync(paths.cacheDir)) {
+      scanDir(paths.cacheDir);
+    }
+
+    const totalSizeMB = (totalBytes / (1024 * 1024)).toFixed(2);
+
+    res.json({
+      success: true,
+      metadataCount,
+      imageCount,
+      movieDirs,
+      tvDirs,
+      gameDirs,
+      totalDirs: movieDirs + tvDirs + gameDirs,
+      totalBytes,
+      imageSizeBytes: totalBytes,
+      imageSizeMB: `${totalSizeMB} MB`,
+      totalSizeMB: `${totalSizeMB} MB`,
+      cacheDir: paths.cacheDir,
+      configDir: paths.rawPath,
+      resolvedConfigDir: paths.resolvedDir,
+      stats: {
+        metadataCount,
+        imageCount,
+        movieDirs,
+        tvDirs,
+        gameDirs,
+        totalDirs: movieDirs + tvDirs + gameDirs,
+        totalBytes,
+        imageSizeBytes: totalBytes,
+        imageSizeMB: `${totalSizeMB} MB`,
+        totalSizeMB: `${totalSizeMB} MB`,
+        cacheDir: paths.cacheDir
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Batch Preload & Cache All Media Poster & Backdrop Images in Vault
+app.post('/api/cache/preload-images', async (req, res) => {
+  try {
+    const paths = getStoragePaths();
+    const db = getDatabase();
+    let processedTitles = 0;
+    let newlyCachedCount = 0;
+    let directoriesCreated = 0;
+
+    for (const item of db.media) {
+      const result = await cacheMediaArtworkAsync(item);
+      processedTitles++;
+      newlyCachedCount += result.cachedFiles.length;
+      directoriesCreated++;
+    }
+
+    res.json({
+      success: true,
+      message: `Cached artwork for ${processedTitles} vault items into dedicated directories in ${paths.rawPath}/cache!`,
+      totalImages: newlyCachedCount,
+      downloadedImages: newlyCachedCount,
+      failedImages: 0,
+      stats: {
+        totalTitles: processedTitles,
+        cachedFiles: newlyCachedCount,
+        directoriesCreated
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Clear Cache Endpoint with granular and thorough wipe modes
+app.post('/api/cache/clear', (req, res) => {
+  const { type = 'all' } = req.body;
+  const paths = getStoragePaths();
+  try {
+    // 1. Always cancel pending save timeouts immediately
+    if (saveMetadataCacheTimeout) {
+      clearTimeout(saveMetadataCacheTimeout);
+      saveMetadataCacheTimeout = null;
+    }
+
+    if (type === 'metadata' || type === 'all') {
+      metadataCacheStore = {};
+      
+      // Delete metadata.json in current cacheDir
+      if (fs.existsSync(paths.metadataCacheFile)) {
+        try { fs.unlinkSync(paths.metadataCacheFile); } catch (e) {}
+      }
+      
+      // Delete legacy metadata cache files if any exist
+      const legacyLocations = [
+        path.join(process.cwd(), 'data', 'cache', 'metadata.json'),
+        path.join(process.cwd(), 'data', 'metadata.json'),
+        path.join(process.cwd(), 'data', 'metadata-cache.json')
+      ];
+      for (const legacyPath of legacyLocations) {
+        if (fs.existsSync(legacyPath)) {
+          try { fs.unlinkSync(legacyPath); } catch (e) {}
+        }
+      }
+
+      // Delete all info.json metadata descriptors inside all media subdirectories
+      function deleteInfoJsonFiles(dir: string) {
+        if (!fs.existsSync(dir)) return;
+        try {
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+              deleteInfoJsonFiles(fullPath);
+            } else if (entry.isFile() && (entry.name === 'info.json' || entry.name.endsWith('-metadata.json'))) {
+              try { fs.unlinkSync(fullPath); } catch (e) {}
+            }
+          }
+        } catch (e) {}
+      }
+      deleteInfoJsonFiles(paths.cacheDir);
+    }
+
+    if (type === 'images') {
+      // Clear image files (.jpg, .png, .webp, .svg, etc.) while preserving metadata.json
+      function deleteImageFiles(dir: string) {
+        if (!fs.existsSync(dir)) return;
+        try {
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+              deleteImageFiles(fullPath);
+              // If subdirectory becomes empty, remove it
+              try {
+                if (fs.readdirSync(fullPath).length === 0) {
+                  fs.rmdirSync(fullPath);
+                }
+              } catch (e) {}
+            } else if (entry.isFile() && /\.(jpg|jpeg|png|webp|gif|svg)$/i.test(entry.name)) {
+              try { fs.unlinkSync(fullPath); } catch (e) {}
+            }
+          }
+        } catch (e) {}
+      }
+      deleteImageFiles(paths.cacheMoviesDir);
+      deleteImageFiles(paths.cacheTvDir);
+      deleteImageFiles(paths.cacheGamesDir);
+      deleteImageFiles(paths.cacheMiscDir);
+    }
+
+    if (type === 'all') {
+      // Complete wipe of cache directory and re-initialization
+      try {
+        if (fs.existsSync(paths.cacheDir)) {
+          fs.rmSync(paths.cacheDir, { recursive: true, force: true });
+        }
+      } catch (e) {
+        console.warn('Notice removing cacheDir:', e);
+      }
+
+      // Also clean legacy data/cache if different
+      const legacyCacheDir = path.join(process.cwd(), 'data', 'cache');
+      if (legacyCacheDir !== paths.cacheDir && fs.existsSync(legacyCacheDir)) {
+        try {
+          fs.rmSync(legacyCacheDir, { recursive: true, force: true });
+        } catch (e) {}
+      }
+    }
+
+    // Recreate clean directory structure
+    [paths.cacheDir, paths.cacheMoviesDir, paths.cacheTvDir, paths.cacheGamesDir, paths.cacheMiscDir].forEach(d => {
+      if (!fs.existsSync(d)) {
+        try { fs.mkdirSync(d, { recursive: true }); } catch (e) {}
+      }
+    });
+
+    const actionDescription = type === 'all' 
+      ? 'All metadata cache entries and artwork images' 
+      : type === 'metadata' 
+        ? 'API metadata cache entries and descriptor files' 
+        : 'Cached artwork images';
+
+    res.json({ 
+      success: true, 
+      message: `Successfully cleared ${actionDescription} in ${paths.rawPath}/cache!`,
+      clearedType: type,
+      cacheDir: paths.cacheDir
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
 // --- AUTHENTICATION ROUTES ---
 
@@ -478,7 +1450,8 @@ app.get('/api/media', (req, res) => {
     result.sort((a, b) => new Date(b.addedAt).getTime() - new Date(a.addedAt).getTime());
   }
 
-  res.json({ success: true, count: result.length, media: result });
+  const resolvedResult = result.map(m => resolveMediaArtworkUrls(m));
+  res.json({ success: true, count: resolvedResult.length, media: resolvedResult });
 });
 
 app.get('/api/media/:id', (req, res) => {
@@ -487,7 +1460,7 @@ app.get('/api/media/:id', (req, res) => {
   if (!item) {
     return res.status(404).json({ success: false, message: 'Media item not found' });
   }
-  res.json({ success: true, item });
+  res.json({ success: true, item: resolveMediaArtworkUrls(item) });
 });
 
 app.post('/api/media', (req, res) => {
@@ -525,7 +1498,9 @@ app.post('/api/media', (req, res) => {
       existing.updatedAt = new Date().toISOString();
 
       saveDatabase(db);
-      return res.json({ success: true, item: existing, merged: true });
+      // Asynchronously cache artwork in dedicated TV directory
+      cacheMediaArtworkAsync(existing).catch(e => console.warn('Cache media artwork failed on merge:', e));
+      return res.json({ success: true, item: resolveMediaArtworkUrls(existing), merged: true });
     }
   }
 
@@ -573,7 +1548,10 @@ app.post('/api/media', (req, res) => {
   db.media.unshift(newItem);
   saveDatabase(db);
 
-  res.json({ success: true, item: newItem });
+  // Automatically create dedicated cache directory for this movie/TV show and download artwork in background
+  cacheMediaArtworkAsync(newItem).catch(e => console.warn('Cache media artwork failed on create:', e));
+
+  res.json({ success: true, item: resolveMediaArtworkUrls(newItem) });
 });
 
 // Update single season on a TV show
@@ -606,7 +1584,8 @@ app.post('/api/media/:id/seasons', (req, res) => {
   item.updatedAt = new Date().toISOString();
 
   saveDatabase(db);
-  res.json({ success: true, item });
+  cacheMediaArtworkAsync(item).catch(e => console.warn('Cache media artwork failed on season update:', e));
+  res.json({ success: true, item: resolveMediaArtworkUrls(item) });
 });
 
 // Toggle watched status on an episode
@@ -630,7 +1609,7 @@ app.post('/api/media/:id/episodes/toggle-watched', (req, res) => {
     saveDatabase(db);
   }
 
-  res.json({ success: true, item });
+  res.json({ success: true, item: resolveMediaArtworkUrls(item) });
 });
 
 app.put('/api/media/:id', (req, res) => {
@@ -650,7 +1629,10 @@ app.put('/api/media/:id', (req, res) => {
   db.media[index] = updated;
   saveDatabase(db);
 
-  res.json({ success: true, item: updated });
+  // Update cached artwork & info in dedicated directory
+  cacheMediaArtworkAsync(updated).catch(e => console.warn('Cache media artwork failed on update:', e));
+
+  res.json({ success: true, item: resolveMediaArtworkUrls(updated) });
 });
 
 app.delete('/api/media/:id', (req, res) => {
@@ -686,7 +1668,7 @@ app.post('/api/media/:id/loan', (req, res) => {
   item.updatedAt = new Date().toISOString();
 
   saveDatabase(db);
-  res.json({ success: true, item });
+  res.json({ success: true, item: resolveMediaArtworkUrls(item) });
 });
 
 // Favorite toggle
@@ -713,6 +1695,12 @@ app.get('/api/tmdb/search', async (req, res) => {
     return res.json({ success: true, results: [] });
   }
 
+  const cacheKey = `tmdb:search:${mediaType}:${query.trim().toLowerCase()}`;
+  const cachedData = getMetadataFromCache(cacheKey);
+  if (cachedData) {
+    return res.json({ ...cachedData, isCached: true });
+  }
+
   const db = getDatabase();
   const tmdbConfig = db.apiConfigs.find(a => a.type === 'tmdb' && a.enabled);
   const apiKey = tmdbConfig?.apiKey || process.env.TMDB_API_KEY;
@@ -725,7 +1713,7 @@ app.get('/api/tmdb/search', async (req, res) => {
       const data = await response.json();
 
       if (data.results) {
-        return res.json({
+        const resultPayload = {
           success: true,
           source: 'tmdb-api',
           results: data.results.map((item: any) => ({
@@ -740,7 +1728,9 @@ app.get('/api/tmdb/search', async (req, res) => {
             vote_average: item.vote_average ? Math.round(item.vote_average * 10) / 10 : 7.0,
             popularity: item.popularity
           }))
-        });
+        };
+        setMetadataToCache(cacheKey, resultPayload);
+        return res.json(resultPayload);
       }
     } catch (err) {
       console.warn('TMDB API fetch error, falling back to smart catalog search:', err);
@@ -894,6 +1884,12 @@ app.get('/api/tmdb/details', async (req, res) => {
     return res.status(400).json({ success: false, message: 'TMDB ID required' });
   }
 
+  const cacheKey = `tmdb:details:${type}:${tmdbId}`;
+  const cachedData = getMetadataFromCache(cacheKey);
+  if (cachedData) {
+    return res.json({ ...cachedData, isCached: true });
+  }
+
   const db = getDatabase();
   const tmdbConfig = db.apiConfigs.find(a => a.type === 'tmdb' && a.enabled);
   const apiKey = tmdbConfig?.apiKey || process.env.TMDB_API_KEY;
@@ -926,7 +1922,7 @@ app.get('/api/tmdb/details', async (req, res) => {
             ownedInVault: true
           }));
 
-        return res.json({
+        const resultPayload = {
           success: true,
           details: {
             id: data.id,
@@ -952,7 +1948,9 @@ app.get('/api/tmdb/details', async (req, res) => {
               backdropUrl: data.belongs_to_collection.backdrop_path ? `https://image.tmdb.org/t/p/w1280${data.belongs_to_collection.backdrop_path}` : undefined
             } : undefined
           }
-        });
+        };
+        setMetadataToCache(cacheKey, resultPayload);
+        return res.json(resultPayload);
       }
     } catch (err) {
       console.warn('TMDB Details fetch error:', err);
@@ -990,6 +1988,12 @@ app.get('/api/tmdb/collection', async (req, res) => {
     return res.status(400).json({ success: false, message: 'Collection ID required' });
   }
 
+  const cacheKey = `tmdb:collection:${collectionId}`;
+  const cachedData = getMetadataFromCache(cacheKey);
+  if (cachedData) {
+    return res.json({ ...cachedData, isCached: true });
+  }
+
   const db = getDatabase();
   const tmdbConfig = db.apiConfigs.find(a => a.type === 'tmdb' && a.enabled);
   const apiKey = tmdbConfig?.apiKey || process.env.TMDB_API_KEY;
@@ -1012,7 +2016,7 @@ app.get('/api/tmdb/collection', async (req, res) => {
           rating: p.vote_average ? Math.round(p.vote_average * 10) / 10 : 7.0
         })).sort((a: any, b: any) => a.releaseYear - b.releaseYear);
 
-        return res.json({
+        const resultPayload = {
           success: true,
           collection: {
             id: data.id,
@@ -1022,7 +2026,9 @@ app.get('/api/tmdb/collection', async (req, res) => {
             backdropUrl: data.backdrop_path ? `https://image.tmdb.org/t/p/w1280${data.backdrop_path}` : '',
             parts
           }
-        });
+        };
+        setMetadataToCache(cacheKey, resultPayload);
+        return res.json(resultPayload);
       }
     } catch (err) {
       console.warn('TMDB Collection fetch error:', err);
@@ -1419,6 +2425,12 @@ app.get('/api/tmdb/season', async (req, res) => {
     return res.status(400).json({ success: false, message: 'tvId is required' });
   }
 
+  const cacheKey = `tmdb:season:${tvId}:${seasonNumber}`;
+  const cachedData = getMetadataFromCache(cacheKey);
+  if (cachedData) {
+    return res.json({ ...cachedData, isCached: true });
+  }
+
   const db = getDatabase();
   const tmdbConfig = db.apiConfigs.find(a => a.type === 'tmdb' && a.enabled);
   const apiKey = tmdbConfig?.apiKey || process.env.TMDB_API_KEY;
@@ -1430,7 +2442,7 @@ app.get('/api/tmdb/season', async (req, res) => {
       const data = await response.json();
 
       if (data.season_number !== undefined && data.episodes && data.episodes.length > 0) {
-        return res.json({
+        const resultPayload = {
           success: true,
           season: {
             id: data.id,
@@ -1453,7 +2465,9 @@ app.get('/api/tmdb/season', async (req, res) => {
               isWatched: false
             }))
           }
-        });
+        };
+        setMetadataToCache(cacheKey, resultPayload);
+        return res.json(resultPayload);
       }
 
       // If seasonNumber > 1 returned 404 or empty (e.g. single-season show on TMDB like Dragon Ball), fetch Season 1 and slice
@@ -1468,7 +2482,7 @@ app.get('/api/tmdb/season', async (req, res) => {
 
         if (sliced.length > 0) {
           const poster = tmdbShowData.seasonPosters[seasonNumber] || tmdbShowData.showPosterUrl;
-          return res.json({
+          const resultPayload = {
             success: true,
             season: {
               seasonNumber,
@@ -1489,7 +2503,9 @@ app.get('/api/tmdb/season', async (req, res) => {
                 isWatched: false
               }))
             }
-          });
+          };
+          setMetadataToCache(cacheKey, resultPayload);
+          return res.json(resultPayload);
         }
       }
     } catch (err) {
@@ -1856,6 +2872,12 @@ app.post('/api/barcode/identify-ai', async (req, res) => {
     return res.status(400).json({ success: false, message: 'Valid numeric barcode required' });
   }
 
+  const cacheKey = `barcode:ai:${cleanCode}`;
+  const cachedData = getMetadataFromCache(cacheKey);
+  if (cachedData) {
+    return res.json({ ...cachedData, isCached: true });
+  }
+
   if (!process.env.GEMINI_API_KEY) {
     return res.status(503).json({ success: false, message: 'Gemini AI key is not configured on server' });
   }
@@ -1895,7 +2917,7 @@ app.post('/api/barcode/identify-ai', async (req, res) => {
       }
     }
 
-    return res.json({
+    const resultPayload = {
       success: true,
       source: 'gemini-3.6-flash',
       result: {
@@ -1909,7 +2931,9 @@ app.post('/api/barcode/identify-ai', async (req, res) => {
         posterUrl: enrichedPosterUrl,
         tmdbId
       }
-    });
+    };
+    setMetadataToCache(cacheKey, resultPayload);
+    return res.json(resultPayload);
   } catch (err: any) {
     return res.status(500).json({ success: false, message: err.message || 'Gemini AI lookup failed' });
   }
@@ -1941,6 +2965,12 @@ app.get('/api/barcode/lookup', async (req, res) => {
       item: existingInVault,
       message: 'Barcode matched an existing item in your physical vault!'
     });
+  }
+
+  const cacheKey = `barcode:lookup:${code}`;
+  const cachedData = getMetadataFromCache(cacheKey);
+  if (cachedData) {
+    return res.json({ ...cachedData, isCached: true });
   }
 
   // Known hardcoded sample UPC mappings for instant demo barcode scans
@@ -2329,30 +3359,6 @@ app.post('/api/settings/apis/test', async (req, res) => {
 });
 
 // Backup & Database Export/Import & Automated Backups
-const BACKUP_DIR = path.join(process.cwd(), 'backups');
-const OLD_BACKUP_DIR = path.join(DATA_DIR, 'backups');
-const AUTO_BACKUP_CONFIG_FILE = path.join(DATA_DIR, 'auto-backup-config.json');
-
-if (!fs.existsSync(BACKUP_DIR)) {
-  fs.mkdirSync(BACKUP_DIR, { recursive: true });
-}
-
-// Migrate any backups from legacy data/backups directory to root backups directory if found
-if (fs.existsSync(OLD_BACKUP_DIR)) {
-  try {
-    const oldFiles = fs.readdirSync(OLD_BACKUP_DIR);
-    for (const file of oldFiles) {
-      const src = path.join(OLD_BACKUP_DIR, file);
-      const dest = path.join(BACKUP_DIR, file);
-      if (fs.statSync(src).isFile() && !fs.existsSync(dest)) {
-        fs.copyFileSync(src, dest);
-      }
-    }
-  } catch (e) {
-    console.log('Notice migrating old backup files:', e);
-  }
-}
-
 function calculateNextBackupTime(frequency: string) {
   const now = new Date();
   if (frequency === 'every_6h') {
@@ -2367,9 +3373,10 @@ function calculateNextBackupTime(frequency: string) {
 }
 
 function getAutoBackupConfig() {
-  if (fs.existsSync(AUTO_BACKUP_CONFIG_FILE)) {
+  const paths = getStoragePaths();
+  if (fs.existsSync(paths.autoBackupConfigFile)) {
     try {
-      return JSON.parse(fs.readFileSync(AUTO_BACKUP_CONFIG_FILE, 'utf-8'));
+      return JSON.parse(fs.readFileSync(paths.autoBackupConfigFile, 'utf-8'));
     } catch {
       // ignore
     }
@@ -2382,47 +3389,58 @@ function getAutoBackupConfig() {
     autoDownload: false,
     lastBackupAt: undefined,
     nextBackupAt: calculateNextBackupTime('daily'),
-    backupLocation: '/backups/'
+    backupLocation: path.join(paths.rawPath, 'backups')
   };
 }
 
 function saveAutoBackupConfig(cfg: any) {
-  fs.writeFileSync(AUTO_BACKUP_CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf-8');
+  const paths = getStoragePaths();
+  try {
+    fs.writeFileSync(paths.autoBackupConfigFile, JSON.stringify(cfg, null, 2), 'utf-8');
+  } catch (e) {
+    console.warn('Failed writing auto-backup-config:', e);
+  }
 }
 
 function listBackupSnapshots() {
-  if (!fs.existsSync(BACKUP_DIR)) return [];
-  const files = fs.readdirSync(BACKUP_DIR).filter(f => f.endsWith('.json'));
-  const snapshots = files.map(file => {
-    const filePath = path.join(BACKUP_DIR, file);
-    const stats = fs.statSync(filePath);
-    let mediaCount = 0;
-    let userCount = 0;
-    try {
-      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      if (Array.isArray(parsed.media)) mediaCount = parsed.media.length;
-      if (Array.isArray(parsed.users)) userCount = parsed.users.length;
-    } catch {
-      // ignore
-    }
-    return {
-      id: file,
-      filename: file,
-      timestamp: stats.mtime.toISOString(),
-      sizeBytes: stats.size,
-      mediaCount,
-      userCount
-    };
-  });
+  const paths = getStoragePaths();
+  if (!fs.existsSync(paths.backupDir)) return [];
+  try {
+    const files = fs.readdirSync(paths.backupDir).filter(f => f.endsWith('.json'));
+    const snapshots = files.map(file => {
+      const filePath = path.join(paths.backupDir, file);
+      const stats = fs.statSync(filePath);
+      let mediaCount = 0;
+      let userCount = 0;
+      try {
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        if (Array.isArray(parsed.media)) mediaCount = parsed.media.length;
+        if (Array.isArray(parsed.users)) userCount = parsed.users.length;
+      } catch {
+        // ignore
+      }
+      return {
+        id: file,
+        filename: file,
+        timestamp: stats.mtime.toISOString(),
+        sizeBytes: stats.size,
+        mediaCount,
+        userCount
+      };
+    });
 
-  return snapshots.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    return snapshots.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  } catch (e) {
+    return [];
+  }
 }
 
 function performAutomatedBackup() {
+  const paths = getStoragePaths();
   const db = getDatabase();
   const dateStr = new Date().toISOString().replace(/[:.]/g, '-');
   const filename = `bluvault-auto-backup-${dateStr}.json`;
-  const filePath = path.join(BACKUP_DIR, filename);
+  const filePath = path.join(paths.backupDir, filename);
 
   fs.writeFileSync(filePath, JSON.stringify(db, null, 2), 'utf-8');
 
@@ -2433,7 +3451,7 @@ function performAutomatedBackup() {
     const toRemove = snapshots.slice(config.retentionCount);
     for (const snap of toRemove) {
       try {
-        fs.unlinkSync(path.join(BACKUP_DIR, snap.filename));
+        fs.unlinkSync(path.join(paths.backupDir, snap.filename));
       } catch {}
     }
   }
@@ -2619,13 +3637,14 @@ app.post('/api/backup/import/system', (req, res) => {
 // Database Segmentation Status API
 app.get('/api/system/db-status', (req, res) => {
   const db = getDatabase();
+  const paths = getStoragePaths();
   const getFileInfo = (filePath: string) => {
     const exists = fs.existsSync(filePath);
     if (!exists) {
       return {
         exists: false,
         path: filePath,
-        relativeFolder: 'data/',
+        relativeFolder: `${paths.rawPath}/`,
         filename: path.basename(filePath),
         sizeBytes: 0,
         updatedAt: new Date().toISOString()
@@ -2635,7 +3654,7 @@ app.get('/api/system/db-status', (req, res) => {
     return {
       exists: true,
       path: filePath,
-      relativeFolder: 'data/',
+      relativeFolder: `${paths.rawPath}/`,
       filename: path.basename(filePath),
       sizeBytes: stats.size,
       updatedAt: stats.mtime.toISOString()
@@ -2644,17 +3663,19 @@ app.get('/api/system/db-status', (req, res) => {
 
   res.json({
     segmented: true,
+    configDir: paths.rawPath,
+    resolvedConfigDir: paths.resolvedDir,
     systemDb: {
       filename: 'bluvault-system.json',
-      path: SYSTEM_DB_FILE,
-      ...getFileInfo(SYSTEM_DB_FILE),
+      path: paths.systemDbFile,
+      ...getFileInfo(paths.systemDbFile),
       userCount: db.users?.length || 0,
       apiConfigCount: db.apiConfigs?.length || 0
     },
     vaultDb: {
       filename: 'bluvault-vault.json',
-      path: VAULT_DB_FILE,
-      ...getFileInfo(VAULT_DB_FILE),
+      path: paths.vaultDbFile,
+      ...getFileInfo(paths.vaultDbFile),
       mediaCount: db.media?.length || 0
     }
   });
@@ -2706,8 +3727,9 @@ app.get('/api/backup/snapshots', (req, res) => {
 });
 
 app.get('/api/backup/snapshots/:id/download', (req, res) => {
+  const paths = getStoragePaths();
   const fileId = req.params.id;
-  const filePath = path.join(BACKUP_DIR, fileId);
+  const filePath = path.join(paths.backupDir, fileId);
   if (!fs.existsSync(filePath)) {
     return res.status(404).json({ success: false, message: 'Backup snapshot not found.' });
   }
@@ -2717,8 +3739,9 @@ app.get('/api/backup/snapshots/:id/download', (req, res) => {
 });
 
 app.delete('/api/backup/snapshots/:id', (req, res) => {
+  const paths = getStoragePaths();
   const fileId = req.params.id;
-  const filePath = path.join(BACKUP_DIR, fileId);
+  const filePath = path.join(paths.backupDir, fileId);
   if (!fs.existsSync(filePath)) {
     return res.status(404).json({ success: false, message: 'Backup snapshot not found.' });
   }
@@ -2732,8 +3755,9 @@ app.delete('/api/backup/snapshots/:id', (req, res) => {
 });
 
 app.post('/api/backup/snapshots/:id/restore', (req, res) => {
+  const paths = getStoragePaths();
   const fileId = req.params.id;
-  const filePath = path.join(BACKUP_DIR, fileId);
+  const filePath = path.join(paths.backupDir, fileId);
   if (!fs.existsSync(filePath)) {
     return res.status(404).json({ success: false, message: 'Backup snapshot not found.' });
   }
@@ -2748,21 +3772,98 @@ app.post('/api/backup/snapshots/:id/restore', (req, res) => {
 });
 
 
-// Docker Container Software Config Path Endpoints
+// System Storage Paths & Config Directory Endpoints
+app.get('/api/system/paths', (req, res) => {
+  const runtime = getRuntimeConfig();
+  const paths = getStoragePaths();
+  const db = getDatabase();
+  const snapshots = listBackupSnapshots();
+  
+  res.json({
+    success: true,
+    vaultName: runtime.vaultName || 'BluVault Primary',
+    vaultLocation: runtime.vaultLocation || 'Main Media Storage',
+    configDirPath: paths.rawPath,
+    resolvedConfigDir: paths.resolvedDir,
+    systemDbFile: paths.systemDbFile,
+    vaultDbFile: paths.vaultDbFile,
+    backupDir: paths.backupDir,
+    cacheDir: paths.cacheDir,
+    cacheMoviesDir: paths.cacheMoviesDir,
+    cacheTvDir: paths.cacheTvDir,
+    cacheGamesDir: paths.cacheGamesDir,
+    mediaCount: db.media.length,
+    userCount: db.users.length,
+    backupSnapshotsCount: snapshots.length
+  });
+});
+
+app.post('/api/system/paths', (req, res) => {
+  const { configDirPath, vaultName, vaultLocation } = req.body;
+  const current = getRuntimeConfig();
+  const oldPaths = getStoragePaths();
+
+  const updated = {
+    ...current,
+    configDirPath: (configDirPath && typeof configDirPath === 'string') ? configDirPath.trim() : (current.configDirPath || 'data'),
+    vaultName: (vaultName && typeof vaultName === 'string') ? vaultName.trim() : (current.vaultName || 'BluVault Primary'),
+    vaultLocation: (vaultLocation && typeof vaultLocation === 'string') ? vaultLocation.trim() : (current.vaultLocation || 'Main Media Storage')
+  };
+
+  saveRuntimeConfig(updated);
+  const newPaths = getStoragePaths();
+
+  // If path changed and new folder doesn't have DB files, migrate from old directory
+  if (newPaths.resolvedDir !== oldPaths.resolvedDir) {
+    try {
+      if (!fs.existsSync(newPaths.resolvedDir)) {
+        fs.mkdirSync(newPaths.resolvedDir, { recursive: true });
+      }
+      if (fs.existsSync(oldPaths.systemDbFile) && !fs.existsSync(newPaths.systemDbFile)) {
+        fs.copyFileSync(oldPaths.systemDbFile, newPaths.systemDbFile);
+      }
+      if (fs.existsSync(oldPaths.vaultDbFile) && !fs.existsSync(newPaths.vaultDbFile)) {
+        fs.copyFileSync(oldPaths.vaultDbFile, newPaths.vaultDbFile);
+      }
+      if (fs.existsSync(oldPaths.metadataCacheFile) && !fs.existsSync(newPaths.metadataCacheFile)) {
+        fs.copyFileSync(oldPaths.metadataCacheFile, newPaths.metadataCacheFile);
+      }
+      if (fs.existsSync(oldPaths.autoBackupConfigFile) && !fs.existsSync(newPaths.autoBackupConfigFile)) {
+        fs.copyFileSync(oldPaths.autoBackupConfigFile, newPaths.autoBackupConfigFile);
+      }
+    } catch (migErr) {
+      console.warn('Notice during config path migration:', migErr);
+    }
+    // Reload metadata cache store from new active location
+    metadataCacheStore = loadMetadataCache();
+  }
+
+  res.json({
+    success: true,
+    message: `System storage paths updated. Config directory set to "${newPaths.rawPath}".`,
+    runtime: updated,
+    paths: newPaths
+  });
+});
+
+// Docker Container Software Config Path Endpoints (backward compatibility)
 app.get('/api/system/config-path', (req, res) => {
-  const configDirPath = process.env.CONFIG_DIR || process.env.DATA_DIR || '/config';
-  res.json({ success: true, configDirPath, isDockerContainer: true });
+  const runtime = getRuntimeConfig();
+  res.json({ success: true, configDirPath: runtime.configDirPath || 'data', isDockerContainer: true });
 });
 
 app.post('/api/system/config-path', (req, res) => {
   const { configDirPath } = req.body;
   if (configDirPath && typeof configDirPath === 'string') {
-    process.env.CONFIG_DIR = configDirPath;
+    const current = getRuntimeConfig();
+    saveRuntimeConfig({ ...current, configDirPath: configDirPath.trim() });
+    process.env.CONFIG_DIR = configDirPath.trim();
   }
+  const paths = getStoragePaths();
   res.json({
     success: true,
-    message: `Software container configuration path updated to ${configDirPath || '/config'}`,
-    configDirPath: configDirPath || '/config'
+    message: `Configuration directory path updated to ${paths.rawPath}`,
+    configDirPath: paths.rawPath
   });
 });
 
@@ -2894,6 +3995,20 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Blu-Vault Server running on http://0.0.0.0:${PORT}`);
+    
+    // Background Artwork Caching Initialization
+    setTimeout(async () => {
+      try {
+        const db = getDatabase();
+        console.log(`[Cache Manager] Ensuring offline local artwork cache for ${db.media.length} vault items...`);
+        for (const item of db.media) {
+          await cacheMediaArtworkAsync(item);
+        }
+        console.log(`[Cache Manager] All media artwork successfully verified and stored in local cache directories.`);
+      } catch (err) {
+        console.warn(`[Cache Manager] Background caching encountered an issue:`, err);
+      }
+    }, 1500);
   });
 }
 

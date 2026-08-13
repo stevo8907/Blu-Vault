@@ -9,9 +9,21 @@ import { ApiConfig, User, AutoBackupConfig, BackupSnapshot } from '../types';
 import { 
   fetchApiConfigs, saveApiConfigs, testApiConfig, exportVaultBackup, exportVaultOnlyJSON, exportSystemOnlyJSON, exportCollectionCSV, importVaultBackup, importVaultOnlyJSON, importSystemOnlyJSON, fetchDatabaseStatus,
   resetSystemToDefault, restartSystem, powerOffSystem,
-  fetchAutoBackupConfig, saveAutoBackupConfig, triggerAutoBackupNow, deleteBackupSnapshot, restoreBackupSnapshot, downloadBackupSnapshot
+  fetchAutoBackupConfig, saveAutoBackupConfig, triggerAutoBackupNow, deleteBackupSnapshot, restoreBackupSnapshot, downloadBackupSnapshot,
+  fetchCacheStats, preloadCacheImages, clearCache
 } from '../lib/api';
 import { CURRENCY_OPTIONS, getSavedCurrencyCode, setSavedCurrencyCode, formatPrice } from '../lib/currency';
+import { 
+  getSavedVaultName, 
+  setSavedVaultName, 
+  getSavedVaultLocation, 
+  setSavedVaultLocation, 
+  getSavedConfigDirPath, 
+  setSavedConfigDirPath, 
+  fetchSystemPaths, 
+  saveSystemPaths, 
+  SystemPathsInfo 
+} from '../lib/vaultConfig';
 import { NavigationSettingsSection } from './NavigationSettingsSection';
 import { LogoSelectorCard } from './LogoIcon';
 import { UserManagementView } from './UserManagementView';
@@ -86,6 +98,165 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, u
   const [snapshotRestoringId, setSnapshotRestoringId] = useState<string | null>(null);
   const [autoBackupNotice, setAutoBackupNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
+  // Cache Management State
+  const [cacheStats, setCacheStats] = useState<{
+    metadataCount: number;
+    imageCount: number;
+    movieDirs: number;
+    tvDirs: number;
+    gameDirs: number;
+    totalDirs: number;
+    imageSizeBytes: number;
+    imageSizeMB: string;
+    cacheDir?: string;
+  } | null>(null);
+  const [isCacheLoading, setIsCacheLoading] = useState(false);
+  const [isPreloadingImages, setIsPreloadingImages] = useState(false);
+  const [isClearingCache, setIsClearingCache] = useState(false);
+  const [cacheConfirmType, setCacheConfirmType] = useState<'metadata' | 'images' | 'all' | null>(null);
+  const [cacheNotice, setCacheNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  // Vault Identity & Storage Directory State
+  const [vaultName, setVaultName] = useState(getSavedVaultName());
+  const [vaultLocation, setVaultLocation] = useState(getSavedVaultLocation());
+  const [configDirPath, setConfigDirPath] = useState(getSavedConfigDirPath());
+  const [systemPathsInfo, setSystemPathsInfo] = useState<SystemPathsInfo | null>(null);
+  const [isSavingVaultConfig, setIsSavingVaultConfig] = useState(false);
+  const [vaultConfigNotice, setVaultConfigNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const loadVaultStoragePaths = async () => {
+    try {
+      const paths = await fetchSystemPaths();
+      setSystemPathsInfo(paths);
+      if (paths.vaultName) setVaultName(paths.vaultName);
+      if (paths.vaultLocation) setVaultLocation(paths.vaultLocation);
+      if (paths.configDirPath) setConfigDirPath(paths.configDirPath);
+    } catch (e) {
+      console.warn('Failed to load system storage paths:', e);
+    }
+  };
+
+  const handleSaveVaultConfig = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setIsSavingVaultConfig(true);
+    setVaultConfigNotice(null);
+    try {
+      setSavedVaultName(vaultName);
+      setSavedVaultLocation(vaultLocation);
+      setSavedConfigDirPath(configDirPath);
+
+      const res = await saveSystemPaths({
+        vaultName,
+        vaultLocation,
+        configDirPath
+      });
+
+      setSystemPathsInfo(res);
+      setVaultConfigNotice({ 
+        type: 'success', 
+        message: `Vault configuration saved! Database, backup & cache directories updated to "${res.configDirPath || configDirPath}".` 
+      });
+      loadAutoBackupData();
+    } catch (err: any) {
+      setVaultConfigNotice({ 
+        type: 'error', 
+        message: err.message || 'Failed to save vault storage configuration.' 
+      });
+    } finally {
+      setIsSavingVaultConfig(false);
+    }
+  };
+
+  const loadCacheStats = async () => {
+    setIsCacheLoading(true);
+    try {
+      const stats = await fetchCacheStats();
+      const raw = stats.stats || stats;
+      setCacheStats({
+        metadataCount: raw.metadataCount ?? 0,
+        imageCount: raw.imageCount ?? 0,
+        movieDirs: raw.movieDirs ?? 0,
+        tvDirs: raw.tvDirs ?? 0,
+        gameDirs: raw.gameDirs ?? 0,
+        totalDirs: raw.totalDirs ?? ((raw.movieDirs || 0) + (raw.tvDirs || 0) + (raw.gameDirs || 0)),
+        imageSizeBytes: raw.imageSizeBytes ?? raw.totalBytes ?? 0,
+        imageSizeMB: raw.imageSizeMB || `${(((raw.totalBytes || raw.imageSizeBytes || 0)) / (1024 * 1024)).toFixed(2)} MB`,
+        cacheDir: raw.cacheDir || (stats as any)?.cacheDir || `${configDirPath}/cache`
+      });
+    } catch (err) {
+      console.error('Error loading cache stats:', err);
+    } finally {
+      setIsCacheLoading(false);
+    }
+  };
+
+  const handlePreloadImages = async () => {
+    setIsPreloadingImages(true);
+    setCacheNotice(null);
+    try {
+      const res = await preloadCacheImages();
+      if (res.success) {
+        setCacheNotice({ type: 'success', message: res.message });
+        await loadCacheStats();
+      } else {
+        setCacheNotice({ type: 'error', message: res.message || 'Preload failed.' });
+      }
+    } catch (err: any) {
+      setCacheNotice({ type: 'error', message: err.message || 'Failed to preload images.' });
+    } finally {
+      setIsPreloadingImages(false);
+    }
+  };
+
+  const handleClearCache = async (type: 'metadata' | 'images' | 'all') => {
+    setIsClearingCache(true);
+    setCacheNotice(null);
+    setCacheConfirmType(null);
+    try {
+      const res = await clearCache(type);
+      if (res.success) {
+        setCacheNotice({ type: 'success', message: res.message });
+        // Immediately reset cached numbers in local state
+        if (type === 'all') {
+          setCacheStats(prev => prev ? {
+            ...prev,
+            metadataCount: 0,
+            imageCount: 0,
+            movieDirs: 0,
+            tvDirs: 0,
+            gameDirs: 0,
+            totalDirs: 0,
+            imageSizeBytes: 0,
+            imageSizeMB: '0.00 MB'
+          } : null);
+        } else if (type === 'metadata') {
+          setCacheStats(prev => prev ? {
+            ...prev,
+            metadataCount: 0
+          } : null);
+        } else if (type === 'images') {
+          setCacheStats(prev => prev ? {
+            ...prev,
+            imageCount: 0,
+            movieDirs: 0,
+            tvDirs: 0,
+            gameDirs: 0,
+            totalDirs: 0,
+            imageSizeBytes: 0,
+            imageSizeMB: '0.00 MB'
+          } : null);
+        }
+        await loadCacheStats();
+      } else {
+        setCacheNotice({ type: 'error', message: res.message || 'Clear cache failed.' });
+      }
+    } catch (err: any) {
+      setCacheNotice({ type: 'error', message: err.message || 'Failed to clear cache.' });
+    } finally {
+      setIsClearingCache(false);
+    }
+  };
+
   const loadAutoBackupData = async () => {
     setIsAutoBackupLoading(true);
     try {
@@ -106,6 +277,9 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, u
   useEffect(() => {
     if (activeTab === 'data') {
       loadAutoBackupData();
+    }
+    if (activeTab === 'api' || activeTab === 'data') {
+      loadCacheStats();
     }
   }, [activeTab]);
 
@@ -180,6 +354,9 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, u
   useEffect(() => {
     if (!currentUser?.permissions || currentUser.permissions.canManageApiKeys !== false) {
       loadConfigs();
+      loadCacheStats();
+      loadAutoBackupData();
+      loadVaultStoragePaths();
     }
   }, [currentUser]);
 
@@ -569,6 +746,194 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, u
             )}
           </div>
 
+          {/* METADATA & IMAGE CACHE SYSTEM CARD */}
+          <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 space-y-6">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+              <div>
+                <h3 className="font-extrabold text-base text-white flex items-center gap-2">
+                  <HardDrive className="w-5 h-5 text-cyan-400" /> Metadata & Artwork Cache Engine
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Local cache stores TMDB metadata & poster artwork to minimize external API calls and enable instant retrieval.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={loadCacheStats}
+                  disabled={isCacheLoading}
+                  className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition-all flex items-center gap-1.5"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 ${isCacheLoading ? 'animate-spin' : ''}`} />
+                  <span>Refresh Stats</span>
+                </button>
+              </div>
+            </div>
+
+            {cacheNotice && (
+              <div className={`p-4 rounded-2xl text-xs font-semibold flex items-center justify-between gap-3 border animate-fade-in ${
+                cacheNotice.type === 'success' 
+                  ? 'bg-emerald-950/60 border-emerald-800/80 text-emerald-200' 
+                  : 'bg-rose-950/60 border-rose-800/80 text-rose-200'
+              }`}>
+                <span>{cacheNotice.message}</span>
+                <button onClick={() => setCacheNotice(null)} className="p-1 text-slate-400 hover:text-white">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800/80 space-y-1">
+                <div className="flex items-center justify-between text-xs text-slate-400">
+                  <span className="font-medium">Media Artwork Folders</span>
+                  <HardDrive className="w-4 h-4 text-cyan-400" />
+                </div>
+                <div className="text-2xl font-black text-white font-mono">
+                  {cacheStats ? cacheStats.totalDirs : 0} <span className="text-xs font-normal text-slate-500">directories</span>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  {cacheStats ? `${cacheStats.movieDirs} Movies · ${cacheStats.tvDirs} TV Shows` : '0 Movies · 0 TV Shows'}
+                </p>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800/80 space-y-1">
+                <div className="flex items-center justify-between text-xs text-slate-400">
+                  <span className="font-medium">Cached Artwork Files</span>
+                  <Sparkles className="w-4 h-4 text-amber-400" />
+                </div>
+                <div className="text-2xl font-black text-white font-mono">
+                  {cacheStats ? cacheStats.imageCount : 0} <span className="text-xs font-normal text-slate-400">({cacheStats ? cacheStats.imageSizeMB : '0.00 MB'})</span>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  Posters, backdrops & season art
+                </p>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800/80 space-y-1">
+                <div className="flex items-center justify-between text-xs text-slate-400">
+                  <span className="font-medium">API Metadata Cache</span>
+                  <Database className="w-4 h-4 text-blue-400" />
+                </div>
+                <div className="text-2xl font-black text-white font-mono">
+                  {cacheStats ? cacheStats.metadataCount : 0} <span className="text-xs font-normal text-slate-500">entries</span>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  TMDB searches & series details
+                </p>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800/80 space-y-2">
+                <div className="flex items-center justify-between text-xs text-slate-400">
+                  <span className="font-medium">Cache Directory Path</span>
+                  <CheckCircle className="w-4 h-4 text-emerald-400" />
+                </div>
+                <div className="text-xs text-emerald-400 font-bold flex items-center gap-1.5 truncate font-mono" title={cacheStats?.cacheDir || `${configDirPath}/cache/`}>
+                  {configDirPath}/cache/
+                </div>
+                <p className="text-[11px] text-slate-500 truncate" title={cacheStats?.cacheDir || ''}>
+                  Dedicated subfolders for movies, TV & metadata
+                </p>
+              </div>
+            </div>
+
+            {/* In-App Confirmation Banner for Cache Clearing */}
+            {cacheConfirmType && (
+              <div className="p-4 rounded-2xl bg-rose-950/90 border border-rose-700/90 text-rose-100 text-xs font-medium space-y-3 animate-fade-in shadow-xl">
+                <div className="flex items-start gap-2.5">
+                  <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-bold text-sm text-white">
+                      {cacheConfirmType === 'all' && 'Confirm Complete Cache Wipe?'}
+                      {cacheConfirmType === 'metadata' && 'Confirm Metadata Cache Clear?'}
+                      {cacheConfirmType === 'images' && 'Confirm Cached Artwork Deletion?'}
+                    </div>
+                    <p className="text-rose-200/90 text-xs mt-0.5">
+                      {cacheConfirmType === 'all' && 'This will remove all TMDB cached queries, item info JSON files, downloaded posters, and season artwork from disk.'}
+                      {cacheConfirmType === 'metadata' && 'This will clear in-memory and on-disk TMDB search results and item info descriptor files.'}
+                      {cacheConfirmType === 'images' && 'This will delete all locally cached poster and backdrop images. Images will be re-downloaded or generated when requested.'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => handleClearCache(cacheConfirmType)}
+                    disabled={isClearingCache}
+                    className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center gap-1.5 shadow transition-all disabled:opacity-50"
+                  >
+                    {isClearingCache ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                    <span>Proceed & Wipe {cacheConfirmType === 'all' ? 'All Cache' : cacheConfirmType === 'metadata' ? 'Metadata' : 'Artwork'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setCacheConfirmType(null)}
+                    disabled={isClearingCache}
+                    className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 font-bold text-xs border border-slate-700 transition-all"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="pt-4 border-t border-slate-800/80 flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
+              <div>
+                <h4 className="text-xs font-bold text-slate-200">Preload Library Media Artwork</h4>
+                <p className="text-[11px] text-slate-400">
+                  Download posters and backdrops for all titles in your vault to ensure instant loading & offline capability.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={handlePreloadImages}
+                  disabled={isPreloadingImages || isClearingCache}
+                  className="px-3.5 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-bold text-xs shadow-md flex items-center gap-1.5 transition-all"
+                >
+                  {isPreloadingImages ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                  <span>{isPreloadingImages ? 'Preloading...' : 'Preload Artwork'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setCacheConfirmType('metadata')}
+                  disabled={isClearingCache || isPreloadingImages}
+                  className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold transition-all flex items-center gap-1.5"
+                  title="Clear API metadata cache and item info JSONs"
+                >
+                  <Database className="w-3.5 h-3.5 text-blue-400" />
+                  <span>Clear Metadata</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setCacheConfirmType('images')}
+                  disabled={isClearingCache || isPreloadingImages}
+                  className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold transition-all flex items-center gap-1.5"
+                  title="Clear cached image files only"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Clear Artwork</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setCacheConfirmType('all')}
+                  disabled={isClearingCache || isPreloadingImages}
+                  className="px-3.5 py-2 rounded-xl bg-rose-950/70 hover:bg-rose-900 text-rose-200 border border-rose-800/80 text-xs font-bold transition-all flex items-center gap-1.5 shadow"
+                  title="Completely wipe all metadata and image caches"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                  <span>Clear All</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
           {/* VIDEO GAME METADATA INTEGRATIONS - GREYED OUT NON-FUNCTIONAL */}
           <div className="bg-slate-900/40 border border-slate-800/60 rounded-3xl p-6 space-y-3 opacity-60">
             <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
@@ -679,6 +1044,124 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, u
               </button>
             </div>
           )}
+
+          {/* VAULT CONFIG NOTICE BANNER */}
+          {vaultConfigNotice && (
+            <div className={`p-4 rounded-2xl text-xs font-mono flex items-center justify-between gap-3 ${
+              vaultConfigNotice.type === 'success' 
+                ? 'bg-purple-950/80 text-purple-200 border border-purple-800' 
+                : 'bg-rose-950/80 text-rose-200 border border-rose-800'
+            }`}>
+              <div className="flex items-center gap-2">
+                <CheckSquare className="w-4 h-4 shrink-0" />
+                <span>{vaultConfigNotice.message}</span>
+              </div>
+              <button 
+                onClick={() => setVaultConfigNotice(null)}
+                className="text-slate-400 hover:text-white text-xs font-bold"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {/* CARD 0: VAULT IDENTITY & STORAGE CONFIGURATION DIRECTORY */}
+          <div className="bg-gradient-to-r from-purple-950/40 via-slate-900 to-indigo-950/40 border border-purple-800/40 rounded-3xl p-6 space-y-5 shadow-xl">
+            <div className="flex items-center justify-between gap-4 flex-wrap border-b border-slate-800/80 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-3 rounded-2xl bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                  <HardDrive className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-white flex items-center gap-2">
+                    Vault Storage Location & Config Directory Path
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Centralized host/container directory where database JSON files, automatic snapshots, and artwork caches reside.
+                  </p>
+                </div>
+              </div>
+
+              <div className="px-3.5 py-1.5 rounded-xl bg-purple-950/80 border border-purple-800/80 text-purple-300 font-mono text-xs font-bold flex items-center gap-2">
+                <span>Active Path:</span>
+                <span className="text-white bg-slate-950 px-2 py-0.5 rounded border border-purple-700/50">
+                  {systemPathsInfo?.configDirPath || configDirPath || '/config'}
+                </span>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveVaultConfig} className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                  <label className="text-xs font-bold text-slate-300 block mb-1">
+                    Vault Instance Name
+                  </label>
+                  <input
+                    type="text"
+                    value={vaultName}
+                    onChange={(e) => setVaultName(e.target.value)}
+                    placeholder="e.g. Blu-Vault Primary"
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-purple-500 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-slate-300 block mb-1">
+                    Physical Vault Location
+                  </label>
+                  <input
+                    type="text"
+                    value={vaultLocation}
+                    onChange={(e) => setVaultLocation(e.target.value)}
+                    placeholder="e.g. Living Room / Basement Rack"
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-purple-500 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-slate-300 block mb-1">
+                    Config & Database Directory Path
+                  </label>
+                  <input
+                    type="text"
+                    value={configDirPath}
+                    onChange={(e) => setConfigDirPath(e.target.value)}
+                    placeholder="e.g. /config or data/"
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-purple-500 rounded-xl px-3.5 py-2.5 text-xs text-purple-300 focus:outline-none font-mono font-bold"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-[11px] font-mono text-slate-400 bg-slate-950/60 p-3 rounded-2xl border border-slate-800/80">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-indigo-400 shrink-0"></span>
+                  <span className="truncate">DB: <span className="text-indigo-300">{systemPathsInfo?.systemDbPath || `${configDirPath}/bluvault-system.json`}</span></span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-cyan-400 shrink-0"></span>
+                  <span className="truncate">Backups: <span className="text-cyan-300">{systemPathsInfo?.backupsDirPath || `${configDirPath}/backups/`}</span></span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-purple-400 shrink-0"></span>
+                  <span className="truncate">Cache: <span className="text-purple-300">{systemPathsInfo?.cacheDirPath || `${configDirPath}/cache/`}</span></span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between pt-2">
+                <p className="text-[11px] text-slate-400">
+                  Changing the config directory will automatically migrate existing database files to the new location.
+                </p>
+                <button
+                  type="submit"
+                  disabled={isSavingVaultConfig}
+                  className="px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-xs font-bold transition-all shadow-md flex items-center gap-2 shrink-0"
+                >
+                  {isSavingVaultConfig ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  <span>{isSavingVaultConfig ? 'Updating Storage Paths...' : 'Save Storage Configuration'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
 
           {/* CARD 1: MANUAL EXPORT & RESTORE */}
           <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 space-y-4">
@@ -811,7 +1294,9 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, u
                 <div className="bg-slate-900/80 rounded-xl p-3 text-xs space-y-1.5 border border-slate-800/80">
                   <div className="flex justify-between text-slate-300">
                     <span className="text-slate-500 font-mono">Location:</span>
-                    <span className="font-mono text-indigo-300">data/bluvault-system.json</span>
+                    <span className="font-mono text-indigo-300 truncate max-w-[200px]" title={systemPathsInfo?.systemDbPath || `${configDirPath}/bluvault-system.json`}>
+                      {systemPathsInfo?.systemDbPath || `${configDirPath}/bluvault-system.json`}
+                    </span>
                   </div>
                   <div className="flex justify-between text-slate-300">
                     <span className="text-slate-500 font-mono">Contents:</span>
@@ -873,7 +1358,9 @@ export const ApiSettingsView: React.FC<ApiSettingsViewProps> = ({ currentUser, u
                 <div className="bg-slate-900/80 rounded-xl p-3 text-xs space-y-1.5 border border-slate-800/80">
                   <div className="flex justify-between text-slate-300">
                     <span className="text-slate-500 font-mono">Location:</span>
-                    <span className="font-mono text-cyan-300">data/bluvault-vault.json</span>
+                    <span className="font-mono text-cyan-300 truncate max-w-[200px]" title={systemPathsInfo?.vaultDbPath || `${configDirPath}/bluvault-vault.json`}>
+                      {systemPathsInfo?.vaultDbPath || `${configDirPath}/bluvault-vault.json`}
+                    </span>
                   </div>
                   <div className="flex justify-between text-slate-300">
                     <span className="text-slate-500 font-mono">Contents:</span>

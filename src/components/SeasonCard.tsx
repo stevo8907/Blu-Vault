@@ -49,7 +49,11 @@ export const SeasonCard: React.FC<SeasonCardProps> = ({
           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
           loading="lazy"
           onError={(e) => {
-            (e.target as HTMLElement).setAttribute('src', parentItem.posterUrl || 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=500&auto=format&fit=crop&q=80');
+            const el = e.target as HTMLImageElement;
+            const fallback = `/api/cache/tv/${parentItem.id}/season-${season.seasonNumber}-poster`;
+            if (!el.src.includes(fallback) && !el.src.includes(`/api/cache/media/${parentItem.id}/`)) {
+              el.src = fallback;
+            }
           }}
         />
 
