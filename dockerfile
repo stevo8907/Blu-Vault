@@ -6,7 +6,7 @@ WORKDIR /app
 
 # Install dependencies (including devDependencies needed for build)
 COPY package*.json ./
-RUN npm ci
+RUN npm install
 
 # Copy source files
 COPY . .
@@ -19,32 +19,34 @@ FROM node:20-alpine AS runner
 
 WORKDIR /app
 
-# Install dumb-init or curl for container healthchecks
-RUN apk add --no-cache curl
+# Install curl for container healthchecks, and su-exec/shadow for permission management
+RUN apk add --no-cache curl su-exec shadow
 
 # Set environment
 ENV NODE_ENV=production
 ENV PORT=3000
+ENV CONFIG_DIR=/config
 
 # Copy package manifests and install only production dependencies
 COPY package*.json ./
-RUN npm ci --only=production && npm cache clean --force
+RUN npm install --omit=dev --no-audit --no-fund && npm cache clean --force
 
 # Copy compiled artifacts from builder stage
 COPY --from=builder /app/dist ./dist
 
-# Create config/data directories and assign permissions
-RUN mkdir -p /config /app/data && chown -R node:node /app /config
+# Create base directories
+RUN mkdir -p /config /app/data
+
+# Copy entrypoint script and ensure executable permissions
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Expose server port
 EXPOSE 3000
-
-# Switch to non-root user for security
-USER node
 
 # Healthcheck to ensure Blu-Vault responds
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:3000/api/health || exit 1
 
-# Start the compiled production server
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["node", "dist/server.cjs"]

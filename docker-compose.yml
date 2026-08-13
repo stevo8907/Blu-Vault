@@ -11,9 +11,12 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - TZ=UTC
+      - PUID=1000
+      - PGID=1000
+      - CONFIG_DIR=/config
     volumes:
-      # Persistent host path for databases (bluvault-system.json, bluvault-vault.json),
-      # automated backups (/backups), and image/metadata caches (/cache)
+      # Persistent host directory for databases, backups, and caches
+      # Example host path: ./config (or /mnt/user/appdata/bluvault on Unraid / NAS)
       - ./config:/config
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]

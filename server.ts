@@ -3994,7 +3994,16 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Blu-Vault Server running on http://0.0.0.0:${PORT}`);
+    const paths = getStoragePaths();
+    console.log(`=======================================================`);
+    console.log(` Blu-Vault v1.0.0 Beta Server Started`);
+    console.log(` Port: ${PORT}`);
+    console.log(` Config Mount Directory: ${paths.resolvedDir}`);
+    console.log(` System DB: ${paths.systemDbFile} (${fs.existsSync(paths.systemDbFile) ? 'Exists' : 'New'})`);
+    console.log(` Vault DB: ${paths.vaultDbFile} (${fs.existsSync(paths.vaultDbFile) ? 'Exists' : 'New'})`);
+    console.log(` Cache Path: ${paths.cacheDir}`);
+    console.log(` Backups Path: ${paths.backupDir}`);
+    console.log(`=======================================================`);
     
     // Background Artwork Caching Initialization
     setTimeout(async () => {
